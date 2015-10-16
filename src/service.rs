@@ -35,8 +35,6 @@ use connection::Connection;
 
 use state::State;
 use event::{Event, HolePunchResult};
-use periodic_sender::PeriodicSender;
-use hole_punching::HolePunch;
 
 /// Type used to represent serialised data in a message.
 pub type Bytes = Vec<u8>;
@@ -52,11 +50,6 @@ pub struct Service {
     beacon_guid_and_port                : Option<(beacon::GUID, u16)>,
     config                              : Config,
     cmd_sender                          : Sender<Closure>,
-    hole_punch_server_shutdown_notifier : ::std::sync::mpsc::Sender<()>,
-    // TODO (canndrew): Ideally this should not need to be an Option<> as the server thread should
-    // have the same lifetime as the Server object. Can change this one rust has linear types.
-    hole_punch_server_handle            : Option<::std::thread::JoinHandle<io::Result<()>>>,
-    hole_punch_server_addr              : SocketAddr,
 }
 
 impl Service {
@@ -85,22 +78,18 @@ impl Service {
 
     fn construct(event_sender: Sender<Event>, config: Config)
             -> io::Result<Service> {
-        let mut state = State::new(event_sender);
+        let mapper = try!(::hole_punching::HolePunchServer::start());
+        let mut state = State::new(event_sender, mapper);
         let cmd_sender = state.cmd_sender.clone();
 
         let handle = try!(Self::new_thread("run loop", move || {
                                 state.run();
                             }));
 
-        let (hole_punch_server_shutdown_notifier, hole_punch_server_handle, hole_punch_server_addr)
-            = try!(::hole_punching::start_hole_punch_server());
         let mut service = Service {
                               beacon_guid_and_port                : None,
                               config                              : config,
                               cmd_sender                          : cmd_sender,
-                              hole_punch_server_shutdown_notifier : hole_punch_server_shutdown_notifier,
-                              hole_punch_server_handle            : Some(hole_punch_server_handle),
-                              hole_punch_server_addr              : hole_punch_server_addr,
                           };
 
         let beacon_port = service.config.beacon_port.clone();
@@ -221,21 +210,6 @@ impl Service {
     /// This should be called before destroying an instance of a Service to allow the
     /// listener threads to join.  Once called, the Service should be destroyed.
     pub fn stop(&mut self) {
-        // Ignore this error. If the server thread has exited we'll find out about it when we
-        // join the JoinHandle.
-        let _ = self.hole_punch_server_shutdown_notifier.send(());
-
-        if let Some(join_handle) = self.hole_punch_server_handle.take() {
-            // unwrap to propogate failure if the server thread panicked
-            match join_handle.join().unwrap() {
-                Ok(())  => (),
-                Err(e)  => {
-                    // TODO (canndrew): Should this error be propogated up to the caller?
-                    warn!("The udp hole punch server exited due to IO error: {}", e)
-                },
-            }
-        };
-
         if let Some(beacon_guid_and_port) = self.beacon_guid_and_port {
             beacon::BroadcastAcceptor::stop(&beacon_guid_and_port);
             self.beacon_guid_and_port = None;
@@ -411,44 +385,12 @@ impl Service {
                             // caller decide the timeout
                           /* timeout: Option<Duration> */)
     {
-        let timeout = Some(::std::time::Duration::from_secs(2));
-
         Self::post(&self.cmd_sender, move |state: &mut State| {
             let event_sender = state.event_sender.clone();
 
             // TODO (canndrew): we currently have no means to handle this error
             let _ = Self::new_thread("udp_punch_hole", move || {
-                let send_data = {
-                    let hole_punch = HolePunch {
-                        secret: secret,
-                        ack: false,
-                    };
-                    let mut enc = ::cbor::Encoder::from_memory();
-                    enc.encode(::std::iter::once(&hole_punch)).unwrap();
-                    enc.into_bytes()
-                };
-                let peer_addrs = peer_addrs.iter().cloned().collect::<Vec<SocketAddr>>();
-                let addr_res: io::Result<SocketAddr> = ::crossbeam::scope(|scope| {
-                    let sender = try!(udp_socket.try_clone());
-                    let receiver = try!(udp_socket.try_clone());
-                    let periodic_sender = PeriodicSender::start(sender, &peer_addrs[..], scope, &send_data[..], 1000);
-                    
-                    let addr_res = (|| {
-                        let mut recv_data = [0u8; 16];
-                        try!(receiver.set_read_timeout(timeout));
-                        loop {
-                            let (read_size, addr) = try!(receiver.recv_from(&mut recv_data[..]));
-                            match ::cbor::Decoder::from_reader(&recv_data[..read_size])
-                                                  .decode::<HolePunch>().next() {
-                                Some(Ok(ref hp)) if hp.ack && hp.secret == secret
-                                    => return Ok(addr),
-                                x   => info!("udp_hole_punch received invalid ack: {:?}", x),
-                            };
-                        }
-                    })();
-                    //try!(periodic_sender.stop());
-                    addr_res
-                });
+                let (addr_res, udp_socket) = ::hole_punching::blocking_udp_punch_hole(udp_socket, secret, peer_addrs);
                 // TODO (canndrew): we currently have no means to handle this error
                 let _ = event_sender.send(Event::OnHolePunched(HolePunchResult {
                     result_token: result_token,

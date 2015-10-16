@@ -48,10 +48,11 @@ pub struct State {
     pub bootstrap_handler : Option<BootstrapHandler>,
     pub stop_called       : bool,
     pub is_bootstrapping  : bool,
+    pub mapper            : ::hole_punching::HolePunchServer,
 }
 
 impl State {
-    pub fn new(event_sender: Sender<Event>) -> State {
+    pub fn new(event_sender: Sender<Event>, mapper: ::hole_punching::HolePunchServer) -> State {
         let (cmd_sender, cmd_receiver) = mpsc::channel::<Closure>();
 
         State {
@@ -63,6 +64,7 @@ impl State {
             bootstrap_handler : None,
             stop_called       : false,
             is_bootstrapping  : false,
+            mapper            : mapper,
         }
     }
 
@@ -416,7 +418,8 @@ mod test {
 
         let (event_sender, event_receiver) = channel();
 
-        let mut s = State::new(event_sender);
+        let mapper = ::hole_punching::HolePunchServer::start().unwrap();
+        let mut s = State::new(event_sender, mapper);
 
         let cmd_sender = s.cmd_sender.clone();
 
