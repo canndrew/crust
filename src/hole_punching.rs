@@ -1,11 +1,15 @@
 use std::net::{SocketAddr, UdpSocket, SocketAddrV4};
 use std::io;
-use std::str::FromStr;
 use std::sync::{Arc, RwLock};
+use std::sync::mpsc::Sender;
+use std::boxed::FnBox;
 
 use periodic_sender::PeriodicSender;
-use socket_utils::RecvUntil;
+use socket_utils::{RecvUntil, WrapSocketAddr};
 use ip::Endpoint;
+use state::State;
+use transport::Message;
+use socket_utils::WrapSocketAddrV4;
 
 #[derive(Debug, RustcEncodable, RustcDecodable)]
 pub struct HolePunch {
@@ -35,30 +39,6 @@ impl GetExternalAddr {
 pub struct SetExternalAddr {
     pub request_id: u32,
     pub addr: WrapSocketAddr,
-}
-
-#[derive(Debug)]
-pub struct WrapSocketAddr(pub SocketAddr);
-
-impl ::rustc_serialize::Encodable for WrapSocketAddr {
-    fn encode<S: ::rustc_serialize::Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        let as_string = format!("{}", self.0);
-        try!(s.emit_str(&as_string[..]));
-        Ok(())
-    }
-}
-
-impl ::rustc_serialize::Decodable for WrapSocketAddr {
-    fn decode<D: ::rustc_serialize::Decoder>(d: &mut D) -> Result<WrapSocketAddr, D::Error> {
-        let as_string = try!(d.read_str());
-        match SocketAddr::from_str(&as_string[..]) {
-            Ok(sa)  => Ok(WrapSocketAddr(sa)),
-            Err(e)  => {
-                let err = format!("Failed to decode WrapSocketAddr: {}", e);
-                Err(d.error(&err[..]))
-            }
-        }
-    }
 }
 
 pub fn blocking_get_mapped_udp_socket(request_id: u32, helper_nodes: Vec<SocketAddr>)
@@ -219,7 +199,7 @@ pub struct HolePunchServer {
 
 impl HolePunchServer {
     /// Create a new hole punching server.
-    pub fn start() -> io::Result<HolePunchServer> {
+    pub fn start(cmd_sender: Sender<Box<FnBox(&mut State) + Send>>) -> io::Result<HolePunchServer> {
         const MAX_DATAGRAM_SIZE: usize = 256;
 
         let (listener_tx, listener_rx) = ::std::sync::mpsc::channel::<()>();
@@ -291,8 +271,15 @@ impl HolePunchServer {
                             if internal == local_addr {
                                 match external {
                                     Endpoint::Udp(SocketAddr::V4(sa))   => {
-                                        let mut ext_ip = external_ip_writer.write().unwrap();
-                                        *ext_ip = Some(sa);
+                                        {
+                                            let mut ext_ip = external_ip_writer.write().unwrap();
+                                            *ext_ip = Some(sa);
+                                        };
+                                        let _ = cmd_sender.send(Box::new(move |state: &mut State| {
+                                            for cd in state.connections.values() {
+                                                let _ = cd.message_sender.send(Message::HolePunchAddress(WrapSocketAddrV4(sa)));
+                                            }
+                                        }));
                                     },
 
                                     // TODO (canndrew): improve the igd APIs to make this panic
@@ -468,15 +455,17 @@ mod tests {
 
     #[test]
     fn test_get_mapped_socket_from_self() {
-        let mapper = HolePunchServer::start().unwrap();
+        let (tx, rx) = ::std::sync::mpsc::channel();
+        let mut state = ::state::State::new(tx).unwrap();
         let (socket, our_addr, remaining)
             = blocking_get_mapped_udp_socket(::rand::random(),
-                                             vec![loopback_v4(mapper.listening_addr().port())]).unwrap();
+                                             vec![loopback_v4(state.mapper.listening_addr().port())]).unwrap();
 
         let received_addr = our_addr.unwrap();
         let socket_addr = socket.local_addr().unwrap();
         assert_eq!(loopback_v4(socket_addr.port()), received_addr);
         assert!(remaining.is_empty());
+        state.stop();
     }
 
 }
