@@ -76,12 +76,18 @@ pub fn sync_map_external_port(local_ep: &ip::Endpoint) -> io::Result<Vec<(Socket
     for local_ep in local_eps {
         join_handles.push(thread::spawn(move || {
             let result = map_external_port(local_ep, local_port);
-            result.map(|ext_ep| (local_ep, ext_ep))
+            let r = result.map(|ext_ep| (local_ep, ext_ep));
+            println!("leaving closure");
+            r
         }));
     };
     let mut ret = Vec::with_capacity(eps_count);
     for h in join_handles {
-        ret.push(try!(h.join().unwrap()));
+        println!("joining");
+        let aaa = h.join();
+        println!("joined");
+        ret.push(try!(aaa.unwrap()));
+        //ret.push(try!(h.join().unwrap()));
     }
     Ok(ret)
 }
