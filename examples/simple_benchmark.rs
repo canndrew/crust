@@ -111,7 +111,7 @@ fn main() {
                                                                                   category_tx.clone());
     let mut s1 = Service::new(event_sender0).unwrap();
 
-    let s1_ep = s1.start_accepting(Port::Tcp(0)).unwrap();
+    let s1_ep = s1.start_accepting(0).unwrap();
 
     let (tx, s2_rx) = channel();
     let event_sender1 = ::maidsafe_utilities::event_sender::MaidSafeObserver::new(tx,
@@ -119,7 +119,7 @@ fn main() {
                                                                                   category_tx);
     let s2 = Service::new(event_sender1).unwrap();
 
-    s2.connect(0, vec![s1_ep]);
+    s2.connect(0, vec![Endpoint::Tcp(s1_ep)]);
 
     let s2_ep = wait_for_connection(&s1_rx, &category_rx);
     let _s1_ep = wait_for_connection(&s2_rx, &category_rx);

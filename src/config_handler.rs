@@ -22,9 +22,12 @@
 //! This means that `read_config_file()`, `create_default_config_file()`, and
 //! `write_config_file()` should not be called concurrently with one another.
 
+use std::net::SocketAddr;
+use util::SocketAddrW;
+
 #[derive(PartialEq, Eq, Debug, RustcDecodable, RustcEncodable, Clone)]
 pub struct Config {
-    pub hard_coded_contacts        : Vec<::transport::Endpoint>,
+    pub hard_coded_contacts        : Vec<SocketAddrW>,
 }
 
 impl Config {
@@ -54,10 +57,14 @@ pub fn create_default_config_file() {
 ///
 /// N.B. This method should only be used as a utility for test and examples.  In normal use cases,
 /// this file should be created by the installer for the dependent application.
-pub fn write_config_file(hard_coded_endpoints: Option<Vec<::transport::Endpoint>>) -> Result<::std::path::PathBuf, ::error::Error> {
+pub fn write_config_file(hard_coded_endpoints: Option<Vec<SocketAddr>>) -> Result<::std::path::PathBuf, ::error::Error> {
     use std::io::Write;
 
     let default = Config::make_default();
+
+    let hard_coded_endpoints = hard_coded_endpoints.map(|v| {
+        v.into_iter().map(|a| SocketAddrW(a)).collect()
+    });
 
     let config = Config{ hard_coded_contacts: hard_coded_endpoints
                             .unwrap_or(default.hard_coded_contacts),

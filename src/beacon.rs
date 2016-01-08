@@ -19,7 +19,7 @@ use rand::random;
 use std::error::Error;
 use std::io;
 use std::io::Result;
-use std::net::{SocketAddr, TcpStream, UdpSocket, SocketAddrV4, SocketAddrV6};
+use std::net::{TcpListener, SocketAddr, TcpStream, UdpSocket, SocketAddrV4, SocketAddrV6};
 use std::str::FromStr;
 use std::sync::{Arc, mpsc, Mutex};
 use std::thread;
@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use net2::UdpSocketExt;
 
-use transport::{Acceptor, Port, Transport, Handshake};
+use transport::{Transport, Handshake};
 use state::State;
 
 const GUID_SIZE: usize = 16;
@@ -68,19 +68,19 @@ fn is_loopback(address: &SocketAddr) -> bool {
 pub struct BroadcastAcceptor {
     guid: GUID,
     socket: Arc<Mutex<UdpSocket>>,
-    acceptor: Arc<Mutex<Acceptor>>,
+    acceptor: Arc<Mutex<TcpListener>>,
     tcp_listener_port: u16,
 }
 
 impl BroadcastAcceptor {
     pub fn new(port: u16) -> Result<BroadcastAcceptor> {
         let socket = try!(UdpSocket::bind(("0.0.0.0", port)));
-        let acceptor = try!(Acceptor::new(Port::Tcp(0)));
+        let acceptor = try!(TcpListener::bind("0.0.0.0:0"));
         let mut guid = [0; GUID_SIZE];
         for i in 0..GUID_SIZE {
             guid[i] = random::<u8>();
         }
-        let tcp_listener_port = acceptor.local_port().number();
+        let tcp_listener_port = try!(acceptor.local_addr()).port();
         Ok(BroadcastAcceptor{ guid: guid,
                               socket: Arc::new(Mutex::new(socket)),
                               acceptor: Arc::new(Mutex::new(acceptor)),

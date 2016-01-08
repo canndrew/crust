@@ -17,15 +17,20 @@
 
 use transport::Endpoint;
 use connection::Connection;
+use util::SocketAddrW;
 use std::net::{UdpSocket, SocketAddr};
-use std::collections::HashSet;
 use std::io;
 
 #[derive(Debug)]
-pub struct MappedUdpSocket {
+pub struct ContactInfoResult {
     pub result_token: u32,
-    // Using HashSet because SocketAddr is not Ord.
-    pub result: io::Result<(UdpSocket, HashSet<SocketAddr>)>,
+    pub contact_info: io::Result<ContactInfo>,
+}
+
+#[derive(Debug)]
+pub struct ContactInfo {
+    pub static_endpoints: Vec<SocketAddrW>,
+    pub rendezvous_endpoints: Vec<SocketAddrW>,
 }
 
 #[derive(Debug)]
@@ -51,10 +56,12 @@ pub enum Event {
     LostConnection(Connection),
     /// Invoked when a new bootstrap connection to a peer is established.  Passes the peer's endpoint.
     BootstrapFinished,
-    /// Invoked when a new bootstrap connection to a peer is established.  Passes the peer's endpoint.
-    ExternalEndpoints(Vec<Endpoint>),
-    /// Invoked as a result of the call to Service::get_mapped_udp_socket.
-    OnUdpSocketMapped(MappedUdpSocket),
+    /// Invoked as a reply to get_external_endpoints. Passes the TCP listening endpoints of the
+    /// service.
+    ExternalEndpoints(Vec<SocketAddr>),
+    /// Invoked as a result of the call to Service::prepare_contact_info.
+    OnContactInfo(ContactInfoResult),
     /// Invoked as a result of the call to Service::udp_punch_hole.
     OnHolePunched(HolePunchResult),
 }
+

@@ -444,7 +444,7 @@ fn main() {
                                                                                  crust_event_category,
                                                                                  category_tx);
     let mut service = Service::new(event_sender).unwrap();
-    let listening_ports = filter_ok(vec![service.start_accepting(Port::Tcp(0))]);
+    let listening_ports = filter_ok(vec![service.start_accepting(0)]);
     assert!(listening_ports.len() >= 1);
     let _ = service.start_beacon(BEACON_PORT);
 
@@ -514,11 +514,11 @@ fn main() {
                                 network.drop_node(c);
                                 network.print_connected_nodes();
                             },
-                            crust::Event::OnUdpSocketMapped(content) => {
-                                match content.result {
-                                    Ok((socket, ext_endpoints)) => {
+                            crust::Event::OnContactInfo(contact_info_result) => {
+                                match contact_info_result.contact_info {
+                                    Ok(contact_info) => {
                                         println!("UdpSocket mapped: {} {:?}",
-                                                 content.result_token, ext_endpoints);
+                                                 contact_info_result.result_token, contact_info.rendezvous_endpoints);
 
                                         let mut network = network2.lock().unwrap();
                                         network.udp_data.push(UdpData::new(socket, ext_endpoints));

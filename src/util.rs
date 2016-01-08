@@ -147,10 +147,12 @@ pub fn ip_from_socketaddr(addr: SocketAddr) -> IpAddr {
     }
 }
 
+/*
 pub fn loopback_v4(port: transport::Port) -> transport::Endpoint {
     let ip = IpAddr::V4(Ipv4Addr::new(127,0,0,1));
     transport::Endpoint::new(ip, port)
 }
+*/
 
 pub fn is_v4(ip_addr: &IpAddr) -> bool {
     match ip_addr {

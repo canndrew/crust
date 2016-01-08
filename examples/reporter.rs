@@ -38,7 +38,7 @@ extern crate rand;
 extern crate rustc_serialize;
 extern crate time;
 
-use crust::{Endpoint, Event, FileHandler,  Port, Service};
+use crust::{Endpoint, Event, FileHandler,  Service};
 use docopt::Docopt;
 use rand::{thread_rng, Rng};
 use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
@@ -410,7 +410,7 @@ fn connect_to_all(service: &mut Service, addrs: &[SocketAddr]) {
 }
 
 fn start_accepting(service: &mut Service, port: u16) -> io::Result<()> {
-    if let Err(e) = service.start_accepting(Port::Tcp(port)) { return Err(e); }
+    if let Err(e) = service.start_accepting(port) { return Err(e); }
 
     // FIXME: this panics on the second run, with "Address already in use"
     //        error. Seems like Service is not cleaning up it's stuff properly

@@ -23,9 +23,12 @@ use util::SocketAddrW;
 /// Information hold for the connection between a pair of nodes
 #[derive(PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct Connection {
-    transport_protocol: Protocol,
-    peer_addr: SocketAddrW,
-    local_addr: SocketAddrW,
+    /// The protcol of the connection.
+    pub transport_protocol: Protocol,
+    /// The address of the remote peer.
+    pub peer_addr: SocketAddrW,
+    /// The local address.
+    pub local_addr: SocketAddrW,
 }
 
 impl Connection {

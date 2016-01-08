@@ -22,8 +22,8 @@
 //! This means that none of the public functions of `BootstrapHandler` should be called concurrently
 //! with any other one.
 
-use transport::Endpoint;
 use file_handler::FileHandler;
+use util::SocketAddrW;
 use std::io;
 use std::net::SocketAddr;
 
@@ -45,8 +45,8 @@ impl BootstrapHandler {
         }
     }
 
-    pub fn update_contacts(&mut self, contacts: Vec<Endpoint>,
-                           prune: Vec<Endpoint>) -> Result<(), ::error::Error> {
+    pub fn update_contacts(&mut self, contacts: Vec<SocketAddr>,
+                           prune: Vec<SocketAddr>) -> Result<(), ::error::Error> {
         try!(self.insert_contacts(contacts, prune));
         // TODO(Team) this implementation is missing and should be considered in next planning
         if ::time::now() > self.last_updated + Self::duration_between_updates() {
@@ -55,8 +55,10 @@ impl BootstrapHandler {
         Ok(())
     }
 
-    pub fn read_file(&mut self) -> Result<Vec<Endpoint>, ::error::Error> {
-        self.file_handler.read_file::<Vec<Endpoint>>()
+    pub fn read_file(&mut self) -> Result<Vec<SocketAddr>, ::error::Error> {
+        let addrs = try!(self.file_handler.read_file::<Vec<SocketAddrW>>());
+        let addrs = addrs.into_iter().map(|a| a.0).collect();
+        Ok(addrs)
     }
 
     fn duration_between_updates() -> ::time::Duration {
@@ -67,8 +69,8 @@ impl BootstrapHandler {
         1500
     }
 
-    fn insert_contacts(&mut self, mut contacts: Vec<Endpoint>,
-                                  prune: Vec<Endpoint>)
+    fn insert_contacts(&mut self, mut contacts: Vec<SocketAddr>,
+                                  prune: Vec<SocketAddr>)
             -> Result<(), ::error::Error> {
         let mut bootstrap_contacts = self.read_file().unwrap_or_else(|e| {
             debug!("Error reading Bootstrap file: {:?}.", e);
@@ -78,7 +80,7 @@ impl BootstrapHandler {
         // We wouldn't add any loopback addresses nor addresses from our local
         // LAN to the bootstrap cache. We can always find such addresses using
         // beacon and more often than not they would be obsolete very soon.
-        contacts.retain(|contact| match contact.get_address() {
+        contacts.retain(|contact| match *contact {
             SocketAddr::V4(a) => ::ip_info::v4::is_global(a.ip()),
             SocketAddr::V6(a) => ::ip_info::v6::is_global(a.ip()),
         });
@@ -97,7 +99,9 @@ impl BootstrapHandler {
                 }
             }
         }
-
+        
+        let bootstrap_contacts: Vec<SocketAddrW> =
+                bootstrap_contacts.into_iter().map(|a| SocketAddrW(a)).collect();
         self.file_handler.write_file(&bootstrap_contacts)
     }
 }
@@ -111,7 +115,7 @@ fn get_file_name() -> ::std::path::PathBuf {
 
 #[cfg(test)]
 mod test {
-    use transport::Endpoint;
+    use std::net::SocketAddr;
 
     struct TestFile {
         file_path: ::std::path::PathBuf,
@@ -127,7 +131,7 @@ mod test {
             path.push(super::get_file_name());
             let mut file = try!(::std::fs::File::create(&path));
             let _ = try!(write!(&mut file, "{}",
-                ::rustc_serialize::json::as_pretty_json(&Vec::<Endpoint>::new())));
+                ::rustc_serialize::json::as_pretty_json(&Vec::<SocketAddr>::new())));
             let _ = try!(file.sync_all());
             Ok(TestFile { file_path: path })
         }
@@ -153,7 +157,7 @@ mod test {
         // Add contacts
         let mut bootstrap_handler = super::BootstrapHandler::new();
         assert!(bootstrap_handler.update_contacts(contacts.clone(),
-                                                  Vec::<Endpoint>::new()).is_ok());
+                                                  Vec::<SocketAddr>::new()).is_ok());
 
         // Check contacts can be retrieved OK
         assert_eq!(bootstrap_handler.read_file().unwrap(), contacts);
@@ -163,7 +167,7 @@ mod test {
             let mut duplicate_contacts = Vec::new();
             duplicate_contacts.push(contacts[i].clone());
             assert!(bootstrap_handler.update_contacts(duplicate_contacts,
-                                                      Vec::<Endpoint>::new()).is_ok());
+                                                      Vec::<SocketAddr>::new()).is_ok());
         }
 
         // Bootstrap contacts should remain unaltered
@@ -180,14 +184,14 @@ mod test {
         // Add contacts
         let mut bootstrap_handler = super::BootstrapHandler::new();
         assert!(bootstrap_handler.update_contacts(contacts.clone(),
-                                                  Vec::<Endpoint>::new()).is_ok());
+                                                  Vec::<SocketAddr>::new()).is_ok());
         assert_eq!(bootstrap_handler.read_file().unwrap(), contacts);
 
         // Prune each contact
         for i in 0..number {
             let mut prune_contacts = Vec::new();
             prune_contacts.push(contacts[i].clone());
-            assert!(bootstrap_handler.update_contacts(Vec::<Endpoint>::new(),
+            assert!(bootstrap_handler.update_contacts(Vec::<SocketAddr>::new(),
                                                       prune_contacts).is_ok());
         }
 
@@ -196,7 +200,7 @@ mod test {
 
         // Re-add the contacts and check they can be retrieved OK
         assert!(bootstrap_handler.update_contacts(contacts.clone(),
-                                                  Vec::<Endpoint>::new()).is_ok());
+                                                  Vec::<SocketAddr>::new()).is_ok());
         let mut retrieved_contacts = bootstrap_handler.read_file().unwrap();
         assert_eq!(retrieved_contacts, contacts);
 
@@ -226,7 +230,7 @@ mod test {
         // Add contacts
         let mut bootstrap_handler = super::BootstrapHandler::new();
         assert!(bootstrap_handler.update_contacts(contacts.clone(),
-                                                  Vec::<Endpoint>::new()).is_ok());
+                                                  Vec::<SocketAddr>::new()).is_ok());
         assert_eq!(bootstrap_handler.read_file().unwrap(), contacts);
 
         // Create a new contact
@@ -235,7 +239,7 @@ mod test {
 
         // Try inserting without also pruning - bootstrap contacts should remain unaltered
         assert!(bootstrap_handler.insert_contacts(new_contacts.clone(),
-                                                  Vec::<Endpoint>::new()).is_ok());
+                                                  Vec::<SocketAddr>::new()).is_ok());
         assert_eq!(bootstrap_handler.read_file().unwrap(), contacts);
 
         // Get the last contact in the list and prune it from the bootstrap file
@@ -258,6 +262,6 @@ mod test {
         let _test_file = TestFile::new().unwrap();
         let mut bootstrap_handler = super::BootstrapHandler::new();
         assert!(bootstrap_handler.update_contacts(contacts.clone(),
-                                                  Vec::<Endpoint>::new()).is_ok());
+                                                  Vec::<SocketAddr>::new()).is_ok());
     }
 }

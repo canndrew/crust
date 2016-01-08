@@ -15,7 +15,7 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::sync::mpsc;
 use std::sync::mpsc::{Sender, Receiver};
@@ -25,19 +25,18 @@ use std::str::FromStr;
 use beacon;
 use bootstrap_handler::BootstrapHandler;
 use config_handler::Config;
-use getifaddrs::{getifaddrs, filter_loopback};
+//use getifaddrs::{getifaddrs, filter_loopback};
 use transport;
-use transport::{Endpoint, Port, Message, Handshake};
+use transport::{Endpoint, Protocol, Message, Handshake};
 use std::thread::JoinHandle;
-use std::net::{SocketAddr, Ipv4Addr, UdpSocket, SocketAddrV4, SocketAddrV6};
-use ip::IpAddr;
+use std::net::{SocketAddr, UdpSocket, SocketAddrV4, SocketAddrV6, TcpListener};
 
 use itertools::Itertools;
-use event::{Event, MappedUdpSocket};
+use event::{Event, ContactInfoResult, ContactInfo};
 use connection::Connection;
 use sequence_number::SequenceNumber;
 use hole_punching::HolePunchServer;
-use util::ip_from_socketaddr;
+use util::{ip_from_socketaddr, SocketAddrW};
 use util;
 
 // Closure is a wapper around boxed closures that tries to work around the fact
@@ -75,30 +74,37 @@ pub struct State {
     pub cmd_sender          : Sender<Closure>,
     pub cmd_receiver        : Receiver<Closure>,
     pub connections         : HashMap<Connection, ConnectionData>,
-    pub listening_ports     : HashSet<Port>,
+    pub listening_endpoints : HashMap<SocketAddr, Vec<SocketAddr>>,
     pub bootstrap_handler   : BootstrapHandler,
     pub stop_called         : bool,
     pub is_bootstrapping    : bool,
     pub next_punch_sequence : SequenceNumber,
     pub mapper              : HolePunchServer,
+    pub mapped_sockets      : HashMap<u32, UdpSocket>,
+    pub mapped_socket_send  : Sender<(u32, UdpSocket)>,
+    pub mapped_socket_recv  : Receiver<(u32, UdpSocket)>,
 }
 
 impl State {
     pub fn new(event_sender: ::CrustEventSender) -> io::Result<State> {
         let (cmd_sender, cmd_receiver) = mpsc::channel::<Closure>();
         let mapper = try!(::hole_punching::HolePunchServer::start(cmd_sender.clone()));
+        let (send, recv) = mpsc::channel();
 
         Ok(State {
             event_sender        : event_sender,
             cmd_sender          : cmd_sender,
             cmd_receiver        : cmd_receiver,
             connections         : HashMap::new(),
-            listening_ports     : HashSet::new(),
+            listening_endpoints : HashMap::new(),
             bootstrap_handler   : BootstrapHandler::new(),
             stop_called         : false,
             is_bootstrapping    : false,
             next_punch_sequence : SequenceNumber::new(::rand::random()),
             mapper              : mapper,
+            mapped_sockets      : HashMap::new(),
+            mapped_socket_send  : send,
+            mapped_socket_recv  : recv,
         })
     }
 
@@ -116,28 +122,26 @@ impl State {
     }
 
     pub fn update_bootstrap_contacts(&mut self,
-                                     contacts_to_add: Vec<Endpoint>,
-                                     contacts_to_remove: Vec<Endpoint>)
+                                     contacts_to_add: Vec<SocketAddr>,
+                                     contacts_to_remove: Vec<SocketAddr>)
     {
         let _ = self.bootstrap_handler.update_contacts(contacts_to_add,
                                                        contacts_to_remove);
     }
 
-    pub fn get_accepting_endpoints(&self) -> Vec<Endpoint> {
-        // FIXME: We should get real endpoints from the acceptors
-        // not use 'unspecified' ips.
-        let unspecified_ip = IpAddr::V4(Ipv4Addr::new(0,0,0,0));
-        self.listening_ports.iter()
-            .cloned()
-            .map(|port| Endpoint::new(unspecified_ip, port))
-            .collect()
+    pub fn get_accepting_endpoints(&self) -> Vec<SocketAddr> {
+        let mut ret = Vec::new();
+        for mapped_addrs in self.listening_endpoints.values() {
+            ret.extend(mapped_addrs.iter());
+        }
+        ret
     }
 
     pub fn populate_bootstrap_contacts(&mut self,
                                        config: &Config,
                                        beacon_port: Option<u16>,
                                        own_beacon_guid_and_port: &Option<([u8; 16], u16)>)
-            -> Vec<Endpoint> {
+            -> Vec<SocketAddr> {
         let cached_contacts = self.bootstrap_handler.read_file().unwrap_or(vec![]);
 
         let beacon_guid = own_beacon_guid_and_port.map(|(guid, _)| guid);
@@ -149,27 +153,15 @@ impl State {
 
         let mut combined_contacts
             = beacon_discovery.into_iter()
-            .chain(config.hard_coded_contacts.iter().cloned())
+            .chain(config.hard_coded_contacts.iter().map(|a| a.0.clone()))
             .chain(cached_contacts.into_iter())
             .unique() // Remove duplicates
             .collect::<Vec<_>>();
 
         // remove own endpoints
-        let own_listening_endpoint = self.get_listening_endpoint();
+        let own_listening_endpoint = self.get_accepting_endpoints();
         combined_contacts.retain(|c| !own_listening_endpoint.contains(&c));
         combined_contacts
-    }
-
-    fn get_listening_endpoint(&self) -> Vec<Endpoint> {
-        let listening_ports = self.listening_ports.iter().cloned().collect::<Vec<Port>>();
-
-        let mut endpoints = Vec::<Endpoint>::new();
-        for port in listening_ports {
-            for ifaddr in filter_loopback(getifaddrs()) {
-                endpoints.push(Endpoint::new(ifaddr.addr, port));
-            }
-        }
-        endpoints
     }
 
     fn handle_handshake(mut handshake : Handshake,
@@ -178,7 +170,7 @@ impl State {
         let handshake_err = Err(io::Error::new(io::ErrorKind::Other,
                                                "handshake failed"));
 
-        handshake.remote_ip = util::SocketAddrW(trans.connection_id.peer_endpoint().get_address());
+        handshake.remote_ip = SocketAddrW(trans.connection_id.peer_endpoint().get_address());
         if let Err(_) = trans.sender.send_handshake(handshake) {
             return handshake_err
         }
@@ -218,9 +210,9 @@ impl State {
     }
 
     pub fn accept(handshake : Handshake,
-                  acceptor  : &transport::Acceptor)
+                  listener  : &TcpListener)
             -> io::Result<(Handshake, transport::Transport)> {
-        Self::handle_handshake(handshake, try!(transport::accept(acceptor)))
+        Self::handle_handshake(handshake, try!(transport::accept(listener)))
     }
 
     pub fn handle_connect(&mut self, token: u32, handshake: Handshake,
@@ -235,8 +227,9 @@ impl State {
 
         let connection = self.register_connection(handshake, trans, event);
         if let Ok(ref connection) = connection {
-            let contacts = vec![connection.peer_endpoint()];
-            self.update_bootstrap_contacts(contacts, vec![]);
+            if connection.transport_protocol == Protocol::Tcp {
+                self.update_bootstrap_contacts(vec![connection.peer_addr.0], vec![]);
+            }
         }
         connection
     }
@@ -366,22 +359,20 @@ impl State {
         self.register_connection(handshake, trans, Event::OnAccept(our_external_endpoint, c))
     }
 
-    fn seek_peers(beacon_guid: Option<[u8; 16]>, beacon_port: u16) -> Vec<Endpoint> {
+    fn seek_peers(beacon_guid: Option<[u8; 16]>, beacon_port: u16) -> Vec<SocketAddr> {
         match beacon::seek_peers(beacon_port, beacon_guid) {
-            Ok(peers) => {
-                peers.into_iter().map(|a| transport::Endpoint::Tcp(a)).collect()
-            },
+            Ok(peers) => peers,
             Err(_) => Vec::new(),
         }
     }
 
     pub fn bootstrap_off_list(&mut self,
                               token: u32,
-                              mut bootstrap_list: Vec<Endpoint>) {
+                              mut bootstrap_list: Vec<SocketAddr>) {
         if self.is_bootstrapping { return; }
         self.is_bootstrapping = true;
 
-        bootstrap_list.retain(|e| !self.is_connected_to(e));
+        bootstrap_list.retain(|e| !self.is_connected_to(&Endpoint::Tcp(e.clone())));
 
         if bootstrap_list.is_empty() {
             let _ = self.event_sender.send(Event::BootstrapFinished);
@@ -399,10 +390,10 @@ impl State {
             let h = Handshake {
                 mapper_port: Some(mapper_port),
                 external_ip: external_ip.map(util::SocketAddrV4W),
-                remote_ip: util::SocketAddrW(SocketAddr::from_str("0.0.0.0:0").unwrap()),
+                remote_ip: SocketAddrW(SocketAddr::from_str("0.0.0.0:0").unwrap()),
             };
 
-            let connect_result = Self::connect(h, head);
+            let connect_result = Self::connect(h, Endpoint::Tcp(head.clone()));
 
             let _ = cmd_sender.send(Closure::new(move |state: &mut State| {
                 if !state.is_bootstrapping {
@@ -457,7 +448,7 @@ impl State {
         addrs
     }
 
-    pub fn get_mapped_udp_socket(&mut self, result_token: u32) {
+    pub fn prepare_contact_info(&mut self, result_token: u32) {
         use ::hole_punching::blocking_get_mapped_udp_socket;
 
         let seq_id = self.next_punch_sequence.number();
@@ -465,25 +456,32 @@ impl State {
 
         let event_sender = self.event_sender.clone();
         let helping_nodes = self.get_ordered_helping_nodes();
-
+        let static_endpoints = self.get_accepting_endpoints().into_iter()
+                                                             .map(|a| SocketAddrW(a))
+                                                             .collect();
+        let mapped_socket_send = self.mapped_socket_send.clone();
         let _result_handle = Self::new_thread("map_udp", move || {
             let result = blocking_get_mapped_udp_socket(seq_id, helping_nodes);
 
             let result = match result {
                 // TODO (peterj) use _rest
                 Ok((socket, opt_mapped_addr, _rest)) => {
-                    let addrs = opt_mapped_addr.into_iter().collect();
-                    Ok((socket, addrs))
+                    let addrs = opt_mapped_addr.into_iter().map(|a| SocketAddrW(a)).collect();
+                    let _ = mapped_socket_send.send((result_token, socket));
+                    Ok(ContactInfo {
+                        static_endpoints: static_endpoints,
+                        rendezvous_endpoints: addrs,
+                    })
                 },
                 Err(what) => Err(what),
             };
 
             let _ = event_sender.send(
-                Event::OnUdpSocketMapped(
-                    MappedUdpSocket{
-                        result_token: result_token,
-                        result: result,
-                    }));
+                Event::OnContactInfo(ContactInfoResult {
+                    result_token: result_token,
+                    contact_info: result,
+                })
+            );
         });
     }
 }
@@ -492,19 +490,15 @@ impl State {
 mod test {
     use super::*;
     use std::thread;
-    use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+    use std::net::{Ipv4Addr, TcpListener, SocketAddr, SocketAddrV4, SocketAddrV6};
     use ip::IpAddr;
     use std::sync::mpsc::channel;
-    use transport::{Endpoint, Port, Acceptor, Handshake};
+    use transport::{Endpoint, Port, Handshake};
     use event::Event;
     use util;
 
-    fn testable_endpoint(acceptor: &Acceptor) -> Endpoint {
-        let addr = match acceptor {
-            &Acceptor::Tcp(ref listener) => listener.local_addr()
-                .unwrap(),
-            _ => panic!("Unable to create a new connection"),
-        };
+    fn testable_endpoint(listener: &TcpListener) -> Endpoint {
+        let addr = listener.local_addr().uwrap();
 
         let ip = util::loopback_if_unspecified(util::ip_from_socketaddr(addr));
         let addr = match (ip, addr) {
@@ -522,7 +516,7 @@ mod test {
     }
 
     fn test_bootstrap_off_list(n: u16) {
-        let acceptors = (0..n).map(|_|Acceptor::new(Port::Tcp(0)).unwrap())
+        let acceptors = (0..n).map(|_| TcpListener::bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 0))).unwrap())
                               .collect::<Vec<_>>();
 
         let eps = acceptors.iter().map(|a|testable_endpoint(&a))

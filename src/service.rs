@@ -22,12 +22,11 @@ use std::thread::JoinHandle;
 use std::sync::{Arc, Mutex};
 use std::str::FromStr;
 
-use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket, TcpListener};
 use beacon;
 use config_handler::{Config, read_config_file};
-use getifaddrs::{getifaddrs, filter_loopback};
-use transport;
-use transport::{Endpoint, Port, Handshake};
+//use getifaddrs::{getifaddrs, filter_loopback};
+use transport::{Endpoint, Handshake};
 use auxip;
 use map_external_port::async_map_external_port;
 use connection::Connection;
@@ -95,24 +94,26 @@ impl Service {
 
     /// Starts accepting on a given port. If port number is 0, the OS
     /// will pick one randomly. The actual port used will be returned.
-    pub fn start_accepting(&mut self, port: Port) -> io::Result<Endpoint> {
-        let acceptor = try!(transport::Acceptor::new(port));
-        let accept_addr = acceptor.local_addr();
+    pub fn start_accepting(&mut self, port: u16) -> io::Result<SocketAddr> {
+        // TODO (canndrew): iterate over interfaces/ips and bind on them seperately
+        let listener = try!(TcpListener::bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port))));
+        let accept_addr = try!(listener.local_addr());
 
-        Self::accept(self.cmd_sender.clone(), acceptor);
+        Self::accept(self.cmd_sender.clone(), listener);
 
+        // TODO (canndrew): why is this here?
+        /*
         if self.beacon_guid_and_port.is_some() {
             let contacts = filter_loopback(getifaddrs()).into_iter()
-                .map(|ip| { Endpoint::new(ip.addr.clone(), accept_addr.get_port()) })
+                .map(|ip| { Endpoint::new(ip.addr.clone(), port) })
                 .collect::<Vec<_>>();
 
             Self::post(&self.cmd_sender, move |state : &mut State| {
                 state.update_bootstrap_contacts(contacts, vec![]);
             });
         }
+        */
 
-        // FIXME: Instead of hardcoded wrapping in loopback V4, the
-        // acceptor should tell us the address it is accepting on.
         Ok(accept_addr)
     }
 
@@ -166,7 +167,7 @@ impl Service {
     /// this service should never connect to.
     pub fn bootstrap_with_blacklist(&mut self, token: u32,
                                                beacon_port: Option<u16>,
-                                               blacklist: &[Endpoint])
+                                               blacklist: &[SocketAddr])
     {
         let config = self.config.clone();
         let beacon_guid_and_port = self.beacon_guid_and_port.clone();
@@ -178,7 +179,7 @@ impl Service {
                                     beacon_port,
                                     &beacon_guid_and_port);
 
-            contacts.retain(|endpoint| !blacklist.contains(&endpoint));
+            contacts.retain(|endpoint| !blacklist.contains(endpoint));
 
             state.bootstrap_off_list(token, contacts.clone());
         });
@@ -192,7 +193,7 @@ impl Service {
     }
 
     /// Remove endpoint from the bootstrap cache.
-    pub fn remove_bootstrap_contact(&mut self, endpoint: Endpoint) {
+    pub fn remove_bootstrap_contact(&mut self, endpoint: SocketAddr) {
         Self::post(&self.cmd_sender, move |state: &mut State| {
             state.update_bootstrap_contacts(vec![], vec![endpoint]);
         });
@@ -202,7 +203,6 @@ impl Service {
     /// listener threads to join.  Once called, the Service should be destroyed.
     pub fn stop(&mut self) {
         use std::net::TcpStream;
-        use utp::UtpSocket;
 
         if let Some(beacon_guid_and_port) = self.beacon_guid_and_port {
             beacon::BroadcastAcceptor::stop(&beacon_guid_and_port);
@@ -214,13 +214,8 @@ impl Service {
 
             // Connect to our listening ports, this should unblock
             // the threads.
-            for port in state.listening_ports.iter() {
-                let addr = ::util::loopback_v4(*port).get_address();
-
-                match *port {
-                    Port::Tcp(_) => { let _ = TcpStream::connect(&addr); },
-                    Port::Utp(_) => { let _ = UtpSocket::connect(&addr); }
-                }
+            for local_addr in state.listening_endpoints.keys() {
+                let _ = TcpStream::connect(local_addr);
             }
         }));
 
@@ -344,12 +339,13 @@ impl Service {
         }
     }
 
-    fn accept(cmd_sender: Sender<Closure>, acceptor: transport::Acceptor) {
+    fn accept(cmd_sender: Sender<Closure>, listener: TcpListener) {
         let cmd_sender2 = cmd_sender.clone();
 
         Self::post(&cmd_sender, move |state: &mut State| {
-            let port = acceptor.local_port();
-            state.listening_ports.insert(port);
+            let local_addr = unwrap_result!(listener.local_addr());
+            let mapped_addrs = vec![local_addr];
+            let _ = state.listening_endpoints.insert(local_addr, mapped_addrs);
 
             let handshake = Handshake {
                 mapper_port: Some(state.mapper.listening_addr().port()),
@@ -358,11 +354,11 @@ impl Service {
             };
 
             let _ = Self::new_thread("listen", move || {
-                let accept_result = State::accept(handshake, &acceptor);
+                let accept_result = State::accept(handshake, &listener);
                 let cmd_sender3 = cmd_sender2.clone();
 
                 let _ = cmd_sender2.send(Closure::new(move |state: &mut State| {
-                    state.listening_ports.remove(&port);
+                    let _ = state.listening_endpoints.remove(&local_addr);
 
                     if state.stop_called {
                         return;
@@ -378,7 +374,7 @@ impl Service {
                         }
                     }
 
-                    Self::accept(cmd_sender3, acceptor);
+                    Self::accept(cmd_sender3, listener);
                 }));
             });
         })
@@ -393,7 +389,7 @@ impl Service {
 
             struct Async {
                 remaining: usize,
-                results: Vec<Endpoint>,
+                results: Vec<SocketAddr>,
             }
 
             let internal_eps = state.get_accepting_endpoints();
@@ -407,18 +403,17 @@ impl Service {
                 let async = async.clone();
                 let event_sender = state.event_sender.clone();
 
-                async_map_external_port(internal_ep.to_ip().clone(),
+                async_map_external_port(auxip::Endpoint::Tcp(internal_ep),
                                         move |results: io::Result<Vec<T>>| {
                     let mut async = async.lock().unwrap();
                     async.remaining -= 1;
                     if let Ok(results) = results {
-                        for result in results {
-                            let transport_port = match internal_ep {
-                                Endpoint::Tcp(_) => Port::Tcp(result.1.port().number()),
-                                Endpoint::Utp(_) => Port::Utp(result.1.port().number()),
+                        for (_, endpoint) in results {
+                            let addr = match endpoint {
+                                auxip::Endpoint::Tcp(addr) => addr,
+                                auxip::Endpoint::Udp(_) => continue,
                             };
-                            let ext_ep = Endpoint::new(result.1.ip(), transport_port);
-                            async.results.push(ext_ep);
+                            async.results.push(addr);
                         }
                     }
                     if async.remaining == 0 {
@@ -431,9 +426,9 @@ impl Service {
     }
 
     /// Lookup a mapped udp socket based on result_token
-    pub fn get_mapped_udp_socket(&self, result_token: u32) {
+    pub fn prepare_contact_info(&self, result_token: u32) {
         Self::post(&self.cmd_sender, move |state: &mut State| {
-            state.get_mapped_udp_socket(result_token);
+            state.prepare_contact_info(result_token);
         });
     }
 
@@ -487,7 +482,7 @@ mod test {
     use super::*;
     use std::fs::remove_file;
     use std::io;
-    use std::net::{UdpSocket, Ipv4Addr, SocketAddrV4};
+    use std::net::{UdpSocket, Ipv4Addr, SocketAddr, SocketAddrV4};
     use std::path::PathBuf;
     use std::sync::mpsc::{Sender, Receiver, channel};
     use std::thread;
@@ -555,7 +550,7 @@ mod test {
         make_temp_config_with_endpoints(&[])
     }
 
-    fn make_temp_config_with_endpoints(endpoints: &[Endpoint]) -> TestConfigFile
+    fn make_temp_config_with_endpoints(endpoints: &[SocketAddr]) -> TestConfigFile
     {
         let path = write_config_file(Some(endpoints.to_vec())).unwrap();
         TestConfigFile{path: path}
@@ -565,8 +560,8 @@ mod test {
         vec.into_iter().filter_map(|a|a.ok()).collect()
     }
 
-    fn loopback_if_unspecified(eps: Vec<Endpoint>) -> Vec<Endpoint> {
-        eps.iter().map(|e|e.map_ip_addr(util::loopback_if_unspecified)).collect()
+    fn loopback_if_unspecified(eps: Vec<SocketAddr>) -> Vec<SocketAddr> {
+        eps.iter().map(|e| SocketAddr::new(util::loopback_if_unspecified(e.ip()), e.port())).collect()
     }
 
     #[test]
@@ -584,7 +579,7 @@ mod test {
                                                   category_tx.clone());
 
         let mut cm1 = Service::new(event_sender1).unwrap();
-        let cm1_ports = filter_ok(vec![cm1.start_accepting(Port::Tcp(0))]);
+        let cm1_ports = filter_ok(vec![cm1.start_accepting(0)]);
         let beacon_port = cm1.start_beacon(0).unwrap();
         assert_eq!(cm1_ports.len(), 1);
         assert_eq!(Some(beacon_port), cm1.get_beacon_acceptor_port());
@@ -652,8 +647,8 @@ mod test {
         let mut service1 = Service::new(event_sender1).unwrap();
 
         let endpoints = loopback_if_unspecified(vec![
-                            service0.start_accepting(Port::Tcp(0)).unwrap(),
-                            service1.start_accepting(Port::Tcp(0)).unwrap()
+                            service0.start_accepting(0).unwrap(),
+                            service1.start_accepting(0).unwrap()
                         ]);
 
         // Write those endpoints to the config file, so the next service will
