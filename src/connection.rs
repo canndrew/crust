@@ -17,7 +17,7 @@
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::hash::{Hash, SipHasher, Hasher};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{Ordering, AtomicBool};
 use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
 use std::io;
@@ -30,12 +30,11 @@ use contact_info::ContactInfo;
 use tcp_connections;
 use utp_connections;
 use sender_receiver::{RaiiSender, Receiver};
-use ip::{IpAddr, SocketAddrExt};
+use ip::SocketAddrExt;
 use socket_addr::SocketAddr;
 use event::Event;
 use sodiumoxide::crypto::sign::PublicKey;
-use endpoint::{Endpoint, Protocol};
-use rand;
+use endpoint::Protocol;
 
 /// An open connection that can be used to send messages to a peer.
 ///
@@ -153,9 +152,11 @@ fn connect_tcp_endpoint(remote_addr: SocketAddr,
     Ok(connection)
 }
 
+// TODO(canndrew): Does this need to be sending our_contact_info to the other peer like
+// connect_tcp_endpoint does? For the matter why does connect_tcp_endpoint do that?
 fn connect_utp_endpoint(remote_addr: SocketAddr,
                         their_pub_key: PublicKey,
-                        our_contact_info: Arc<Mutex<ContactInfo>>,
+                        _our_contact_info: Arc<Mutex<ContactInfo>>,
                         event_tx: ::CrustEventSender)
                         -> io::Result<Connection> {
     let (network_input, writer) = try!(utp_connections::connect_utp(remote_addr.clone()));
@@ -301,6 +302,7 @@ fn start_rx(mut network_rx: Receiver, their_pub_key: PublicKey, event_tx: ::Crus
     let _ = event_tx.send(Event::LostConnection(their_pub_key));
 }
 
+#[cfg(test)]
 mod test {
     use super::*;
 

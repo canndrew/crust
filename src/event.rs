@@ -35,13 +35,17 @@ pub struct ContactInfoResult {
 #[derive(Debug)]
 pub struct OurContactInfo {
     /// The mapped UDP socket that may be used for this connection.
-    pub socket: UdpSocket,
+    pub udp_rendezvous_socket: UdpSocket,
+    /// The local tcp address that may be used for doing tcp rendezvous connect.
+    pub tcp_rendezvous_local_addr: SocketAddr,
     /// Secret data used for rendezvous connect.
     pub secret: Option<[u8; 4]>,
-    /// Our tcp listening addresses.
+    /// Our static listening addresses.
     pub static_addrs: Vec<Endpoint>,
     /// The mapped addresses of our UDP socket.
-    pub rendezvous_addrs: Vec<SocketAddr>,
+    pub udp_rendezvous_addrs: Vec<SocketAddr>,
+    /// The mapped addresses of our local TCP address.
+    pub tcp_rendezvous_addrs: Vec<SocketAddr>,
     /// TODO: documentation
     pub pub_key: PublicKey,
 }
@@ -53,8 +57,10 @@ pub struct TheirContactInfo {
     pub secret: Option<[u8; 4]>,
     /// Their tcp listening addresses.
     pub static_addrs: Vec<Endpoint>,
-    /// Their mapped addresses for UDP rendezvous connect.
-    pub rendezvous_addrs: Vec<SocketAddr>,
+    /// The mapped addresses of their UDP rendezvous socket.
+    pub udp_rendezvous_addrs: Vec<SocketAddr>,
+    /// The mapped addresses of their TCP rendezvous addr.
+    pub tcp_rendezvous_addrs: Vec<SocketAddr>,
     /// TODO: documentation
     pub pub_key: PublicKey,
 }
@@ -66,7 +72,8 @@ impl OurContactInfo {
         TheirContactInfo {
             secret: self.secret.clone(),
             static_addrs: self.static_addrs.clone(),
-            rendezvous_addrs: self.rendezvous_addrs.clone(),
+            udp_rendezvous_addrs: self.udp_rendezvous_addrs.clone(),
+            tcp_rendezvous_addrs: self.tcp_rendezvous_addrs.clone(),
             pub_key: self.pub_key,
         }
     }

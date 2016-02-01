@@ -16,39 +16,23 @@
 // relating to use of the SAFE Network Software.
 
 use std::io;
-use std::sync::mpsc;
-use std::sync::atomic::{Ordering, AtomicBool};
-use std::thread;
-use std::net;
-use std::thread::JoinHandle;
 use std::sync::{Arc, Mutex};
-use std::str::FromStr;
-use std::collections::BTreeSet;
-use std::cmp;
 use service_discovery::ServiceDiscovery;
 use sodiumoxide;
 use sodiumoxide::crypto::sign;
-use sodiumoxide::crypto::sign::PublicKey;
-
-use std::net::TcpListener;
 
 use connection::RaiiTcpAcceptor;
 use udp_listener::UdpListener;
 use contact_info::ContactInfo;
 use rand;
-use maidsafe_utilities::thread::RaiiThreadJoiner;
-use itertools::Itertools;
-use config_handler::{Config, read_config_file};
 use endpoint::{Endpoint, Protocol};
-use connection::Connection;
 use error::Error;
 use ip::SocketAddrExt;
 use connection;
 use bootstrap::RaiiBootstrap;
 
 use event::{Event, OurContactInfo, TheirContactInfo, ContactInfoResult};
-use socket_addr::{SocketAddr, SocketAddrV4};
-use bootstrap_handler::BootstrapHandler;
+use socket_addr::SocketAddr;
 
 /// A structure representing a connection manager.
 ///
@@ -58,9 +42,8 @@ use bootstrap_handler::BootstrapHandler;
 /// information.
 pub struct Service {
     our_contact_info: Arc<Mutex<ContactInfo>>,
-    peer_contact_infos: Arc<Mutex<Vec<ContactInfo>>>,
     service_discovery: ServiceDiscovery<ContactInfo>,
-    udp_listener: UdpListener,
+    _udp_listener: UdpListener,
     event_tx: ::CrustEventSender,
     external_udp_sock_seq_id: u32,
     bootstrap: RaiiBootstrap,
@@ -109,9 +92,9 @@ impl Service {
 
         let service = Service {
             our_contact_info: our_contact_info,
-            peer_contact_infos: peer_contact_infos,
+            //peer_contact_infos: peer_contact_infos,
             service_discovery: service_discovery,
-            udp_listener: udp_listener,
+            _udp_listener: udp_listener,
             event_tx: event_tx,
             external_udp_sock_seq_id: 0,
             bootstrap: bootstrap,
@@ -134,7 +117,11 @@ impl Service {
 
     /// Get the hole punch servers addresses of nodes that we're connected to ordered by how likely
     /// they are to be on a seperate network.
-    pub fn get_ordered_helping_nodes(&self) -> Vec<SocketAddr> {
+    pub fn get_ordered_helping_nodes(&self, protocol: Protocol) -> Vec<SocketAddr> {
+        // TODO(canndrew): Whenever me make or accept a connection we should be adding the peers
+        // static contact info to a cache (ie. the bootstrap cache). This function should read the
+        // cache and choose some socket addresses that might be able to act as rendezvous servers.
+        let _ = protocol;
         unimplemented!()
     }
 
@@ -165,8 +152,8 @@ impl Service {
         if let Some(msg) = if our_contact_info.secret != their_contact_info.secret {
             Some("Cannot connect. our_contact_info and their_contact_info are not associated with \
                   the same connection.")
-        } else if their_contact_info.rendezvous_addrs.is_empty() {
-            Some("No rendezvous address supplied. Direct connections not yet supported.")
+        } else if their_contact_info.udp_rendezvous_addrs.is_empty() {
+            Some("No udp rendezvous address supplied. Direct connections and tcp rendezvous connect not yet supported.")
         } else {
             None
         } {
@@ -180,14 +167,18 @@ impl Service {
         }
 
         let event_tx = self.event_tx.clone();
-        let our_pub_key = unwrap_result!(self.our_contact_info.lock()).pub_key.clone();
+        //let our_pub_key = unwrap_result!(self.our_contact_info.lock()).pub_key.clone();
 
-        // TODO connect to all the socket addresses of peer in parallel
+        // TODO(canndrew): blocking_udp_punch_hole should take an array of rendezvous addresses
+        // and hole punch to all of them simultaneously.
+        // TODO(canndrew): We should also attempt a tcp rendezvous connect here in parallel
+        // TODO(canndrew): We should try to connect directly using their static addresses before
+        // initiating a rendezvous connect.
         let _joiner = thread!("PeerConnectionThread", move || {
             let (udp_socket, result_addr) =
-                ::utp_connections::blocking_udp_punch_hole(our_contact_info.socket,
+                ::utp_connections::blocking_udp_punch_hole(our_contact_info.udp_rendezvous_socket,
                                                            our_contact_info.secret,
-                                                           their_contact_info.rendezvous_addrs[0]
+                                                           their_contact_info.udp_rendezvous_addrs[0]
                                                                .clone());
             let public_endpoint = match result_addr {
                 Ok(addr) => addr,
@@ -223,8 +214,10 @@ impl Service {
     /// Lookup a mapped udp socket based on result_token
     pub fn prepare_contact_info(&mut self, result_token: u32) {
         use utp_connections::external_udp_socket;
+        use tcp_connections::external_tcp_addr;
 
-        let helping_nodes = self.get_ordered_helping_nodes();
+        let utp_helping_nodes = self.get_ordered_helping_nodes(Protocol::Utp);
+        let tcp_helping_nodes = self.get_ordered_helping_nodes(Protocol::Tcp);
         let event_tx = self.event_tx.clone();
 
         let static_addrs = self.get_known_external_endpoints();
@@ -233,20 +226,26 @@ impl Service {
         let seq_id = self.external_udp_sock_seq_id;
         self.external_udp_sock_seq_id += 1;
 
-        let _result_handle = thread!("map_udp", move || {
-            let result = external_udp_socket(seq_id, helping_nodes);
+        let _result_handle = thread!("map sockets", move || {
+            let result = external_udp_socket(seq_id, utp_helping_nodes);
 
             let res = match result {
                 // TODO (peterj) use _rest
-                Ok((socket, mapped_addr)) => {
-                    let addrs = vec![mapped_addr];
-                    Ok(OurContactInfo {
-                        socket: socket,
-                        secret: Some(rand::random()),
-                        static_addrs: static_addrs,
-                        rendezvous_addrs: addrs,
-                        pub_key: our_pub_key,
-                    })
+                Ok((udp_rendezvous_socket, external_udp_addr)) => {
+                    match external_tcp_addr(seq_id, tcp_helping_nodes) {
+                        Ok((local_tcp_addr, external_tcp_addrs)) => {
+                            Ok(OurContactInfo {
+                                udp_rendezvous_socket: udp_rendezvous_socket,
+                                tcp_rendezvous_local_addr: local_tcp_addr,
+                                secret: Some(rand::random()),
+                                static_addrs: static_addrs,
+                                udp_rendezvous_addrs: vec![external_udp_addr],
+                                tcp_rendezvous_addrs: external_tcp_addrs,
+                                pub_key: our_pub_key,
+                            })
+                        },
+                        Err(e) => Err(e)
+                    }
                 }
                 Err(what) => Err(what),
             };

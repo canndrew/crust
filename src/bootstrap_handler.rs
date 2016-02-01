@@ -24,9 +24,8 @@
 
 use error::Error;
 use contact_info::ContactInfo;
-use config_file_handler::FileHandler;
 use config_file_handler;
-use util;
+use config_file_handler::FileHandler;
 
 pub struct BootstrapHandler {
     file_handler: FileHandler,

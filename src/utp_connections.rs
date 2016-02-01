@@ -95,6 +95,9 @@ pub fn external_udp_socket(request_id: u32,
 }
 
 // TODO All this function should be returning is either an Ok(()) or Err(..)
+// TODO(canndrew): This function needs several changes made to it
+//  * We should take a Vec of peer_addrs and be sending HolePunchs to all of them
+//  * Hole punch messages should be signed with our key and encrypted with theirs
 /// Returns the socket along with the peer's SocketAddr
 pub fn blocking_udp_punch_hole(udp_socket: UdpSocket,
                                secret: Option<[u8; 4]>,

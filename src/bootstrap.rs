@@ -23,7 +23,6 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::thread;
-use std::collections::HashSet;
 
 use config_file_handler::FileHandler;
 use maidsafe_utilities::thread::RaiiThreadJoiner;
