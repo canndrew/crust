@@ -15,10 +15,9 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use std::sync::{Arc, Mutex, MutexGuard};
 use socket_addr::SocketAddr;
 use sodiumoxide::crypto::sign::PublicKey;
-use rustc_serialize::{Encodable, Encoder, Decodable, Decoder};
+use rustc_serialize::{Encodable, Encoder, Decoder};
 
 /// This struct contains information needed to Bootstrap and for echo-server services
 #[derive(RustcEncodable, RustcDecodable, Debug, Clone, PartialEq, Eq, Hash)]

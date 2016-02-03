@@ -16,30 +16,15 @@
 // relating to use of the SAFE Network Software.
 
 use std::io;
-use std::sync::mpsc;
-use std::sync::atomic::{Ordering, AtomicBool};
-use std::thread;
-use std::net;
-use std::thread::JoinHandle;
 use std::sync::{Arc, Mutex};
-use std::str::FromStr;
-use std::cmp;
 use service_discovery::ServiceDiscovery;
 use sodiumoxide;
 use sodiumoxide::crypto::sign;
-use sodiumoxide::crypto::sign::PublicKey;
-
-use std::net::TcpListener;
 
 use connection::RaiiTcpAcceptor;
 use udp_listener::RaiiUdpListener;
 use static_contact_info::StaticContactInfo;
 use rand;
-use maidsafe_utilities::thread::RaiiThreadJoiner;
-use itertools::Itertools;
-use config_handler::{Config, read_config_file};
-use endpoint::{Endpoint, Protocol};
-use connection::Connection;
 use error::Error;
 use ip::SocketAddrExt;
 use connection;
@@ -48,10 +33,8 @@ use bootstrap::RaiiBootstrap;
 
 use event::Event;
 use connection_info::{OurConnectionInfo, OurConnectionInfoInner, TheirConnectionInfo,
-                      TheirConnectionInfoInner, ConnectionInfoResult,
-                      FriendOurConnectionInfo, FriendTheirConnectionInfo};
-use socket_addr::{SocketAddr, SocketAddrV4};
-use bootstrap_handler::BootstrapHandler;
+                      ConnectionInfoResult, FriendOurConnectionInfo, FriendTheirConnectionInfo};
+use socket_addr::SocketAddr;
 use utp_connections;
 
 /*
@@ -76,8 +59,6 @@ pub struct Service {
     service_discovery: ServiceDiscovery<StaticContactInfo>,
     event_tx: ::CrustEventSender,
     bootstrap: RaiiBootstrap,
-    use_static_tcp_listener: bool,
-    use_static_udp_listener: bool,
     _raii_udp_listener: Option<RaiiUdpListener>,
     _raii_tcp_acceptor: Option<RaiiTcpAcceptor>,
 }
@@ -147,8 +128,6 @@ impl Service {
             service_discovery: service_discovery,
             event_tx: event_tx,
             bootstrap: bootstrap,
-            use_static_tcp_listener: use_static_tcp_listener,
-            use_static_udp_listener: use_static_udp_listener,
             _raii_udp_listener: udp_listener,
             _raii_tcp_acceptor: raii_tcp_acceptor,
         };

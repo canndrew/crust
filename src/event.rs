@@ -16,12 +16,8 @@
 // relating to use of the SAFE Network Software.
 
 use endpoint::Endpoint;
-use connection::{RaiiTcpAcceptor, Connection};
-use std::net::UdpSocket;
-use socket_addr::SocketAddr;
-use sodiumoxide::crypto::sign::PublicKey;
+use connection::Connection;
 use std::io;
-use static_contact_info::StaticContactInfo;
 use connection_info::ConnectionInfoResult;
 
 // This is necessary to gracefully exit the threads. In current design, there is no control over
