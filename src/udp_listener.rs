@@ -19,7 +19,6 @@ use std::io;
 use std::net;
 use std::net::UdpSocket;
 use std::time::Duration;
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use itertools::Itertools;
@@ -28,7 +27,6 @@ use get_if_addrs;
 use maidsafe_utilities::serialisation::{deserialise, serialise};
 use maidsafe_utilities::thread::RaiiThreadJoiner;
 use rand;
-use sodiumoxide::crypto::sign::PublicKey;
 
 use connection::utp_rendezvous_connect;
 use static_contact_info::StaticContactInfo;

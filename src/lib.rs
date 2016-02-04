@@ -41,7 +41,7 @@
 // #![feature(plugin)]
 // #![plugin(clippy)]
 
-#![allow(unused, unused_extern_crates)]
+#![allow(unused)]
 
 extern crate cbor;
 extern crate itertools;
@@ -53,7 +53,6 @@ extern crate rustc_serialize;
 extern crate time;
 extern crate utp;
 extern crate crossbeam;
-extern crate memmap;
 #[macro_use]
 extern crate maidsafe_utilities;
 extern crate socket_addr;

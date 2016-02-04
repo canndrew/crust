@@ -18,7 +18,6 @@
 use std::io;
 use std::net::UdpSocket;
 use socket_addr::SocketAddr;
-use connection::RaiiTcpAcceptor;
 use static_contact_info::StaticContactInfo;
 
 /// The result of a `Service::prepare_contact_info` call.

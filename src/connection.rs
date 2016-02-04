@@ -17,9 +17,9 @@
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::hash::{Hash, SipHasher, Hasher};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{Ordering, AtomicBool};
-use std::net::{Shutdown, TcpListener, TcpStream, UdpSocket};
+use std::net::{Shutdown, TcpStream, UdpSocket};
 use std::io;
 use cbor;
 use itertools::Itertools;
@@ -30,12 +30,10 @@ use static_contact_info::StaticContactInfo;
 use tcp_connections;
 use utp_connections;
 use sender_receiver::{RaiiSender, Receiver};
-use ip::{IpAddr, SocketAddrExt};
+use ip::SocketAddrExt;
 use socket_addr::SocketAddr;
 use event::Event;
-use sodiumoxide::crypto::sign::PublicKey;
-use endpoint::{Endpoint, Protocol};
-use rand;
+use endpoint::Protocol;
 use std::fmt::{Debug, Formatter};
 use net2::TcpBuilder;
 use socket_utils;
@@ -242,7 +240,6 @@ pub fn start_tcp_accept(port: u16,
                         -> io::Result<RaiiTcpAcceptor> {
     use std::io::Write;
     use std::io::Read;
-    use std::net::ToSocketAddrs;
 
     let tcp_builder_listener = try!(TcpBuilder::new_v4());
     try!(socket_utils::enable_so_reuseport(try!(tcp_builder_listener.reuse_address(true))));
