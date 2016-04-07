@@ -31,6 +31,7 @@ use rand::Rng;
 use service_discovery::ServiceDiscovery;
 use nat_traversal::MappingContext;
 use sodiumoxide::crypto::box_::PublicKey;
+use time;
 
 use error::Error;
 use config_handler::Config;
@@ -53,6 +54,7 @@ impl RaiiBootstrap {
                our_public_key: PublicKey,
                event_tx: ::CrustEventSender,
                connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+               connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
                bootstrap_cache: Arc<Mutex<BootstrapHandler>>,
                mc: Arc<MappingContext>,
                tcp_enabled: bool,
@@ -67,6 +69,7 @@ impl RaiiBootstrap {
                                      cloned_stop_flag,
                                      event_tx,
                                      connection_map,
+                                     connecting_map,
                                      bootstrap_cache,
                                      &mc,
                                      tcp_enabled,
@@ -88,6 +91,7 @@ impl RaiiBootstrap {
                  stop_flag: Arc<AtomicBool>,
                  event_tx: ::CrustEventSender,
                  connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+                 connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
                  bootstrap_cache: Arc<Mutex<BootstrapHandler>>,
                  mapping_context: &MappingContext,
                  tcp_enabled: bool,
@@ -107,6 +111,7 @@ impl RaiiBootstrap {
                                           our_public_key.clone(),
                                           event_tx.clone(),
                                           connection_map.clone(),
+                                          connecting_map.clone(),
                                           bootstrap_cache.clone(),
                                           mapping_context,
                                           tcp_enabled,

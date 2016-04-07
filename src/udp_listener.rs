@@ -28,6 +28,7 @@ use maidsafe_utilities::thread::RaiiThreadJoiner;
 use nat_traversal::{MappedUdpSocket, MappingContext, PunchedUdpSocket, gen_rendezvous_info};
 use sodiumoxide::crypto::box_::PublicKey;
 use crossbeam;
+use time;
 
 use connection::{Connection, utp_rendezvous_connect, UtpRendezvousConnectMode};
 use static_contact_info::StaticContactInfo;
@@ -50,6 +51,7 @@ impl RaiiUdpListener {
                our_public_key: PublicKey,
                event_tx: ::CrustEventSender,
                connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+               connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
                _bootstrap_cache: Arc<Mutex<BootstrapHandler>>,
                mc: Arc<MappingContext>)
                -> io::Result<RaiiUdpListener> {
@@ -80,6 +82,7 @@ impl RaiiUdpListener {
                       event_tx,
                       cloned_stop_flag,
                       connection_map,
+                      connecting_map,
                       mc);
         }));
 
@@ -94,6 +97,7 @@ impl RaiiUdpListener {
            event_tx: ::CrustEventSender,
            stop_flag: Arc<AtomicBool>,
            connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+           connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
            mc: Arc<MappingContext>) {
 
         let udp_socket = &udp_socket;
@@ -105,6 +109,7 @@ impl RaiiUdpListener {
                         let our_public_key = our_public_key.clone();
                         let event_tx = event_tx.clone();
                         let connection_map = connection_map.clone();
+                        let connecting_map = connecting_map.clone();
                         let mc = mc.clone();
                         let _  = scope.spawn(move || {
                             RaiiUdpListener::handle_request(msg,
@@ -112,6 +117,7 @@ impl RaiiUdpListener {
                                                             peer_addr,
                                                             event_tx,
                                                             connection_map,
+                                                            connecting_map,
                                                             mc,
                                                             udp_socket);
                         });
@@ -126,6 +132,7 @@ impl RaiiUdpListener {
                       peer_addr: net::SocketAddr,
                       event_tx: ::CrustEventSender,
                       connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+                      connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
                       mc: Arc<MappingContext>,
                       udp_listener: &UdpSocket) {
         match msg {
@@ -175,7 +182,8 @@ impl RaiiUdpListener {
                                              UtpRendezvousConnectMode::BootstrapAccept,
                                              our_public_key,
                                              event_tx,
-                                             connection_map) {
+                                             connection_map,
+                                             connecting_map) {
                     Ok(()) => (),
                     Err(e) => {
                         warn!("Failed to receive utp connection: {}", e);

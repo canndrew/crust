@@ -17,7 +17,7 @@
 
 #![deny(unused)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map, HashMap, HashSet};
 use std::io;
 use std::net;
 use std::sync::{mpsc, Arc, Mutex};
@@ -31,7 +31,7 @@ use net2;
 use nat_traversal::{MappedUdpSocket, MappingContext, PrivRendezvousInfo, MappedTcpSocket,
                     PubRendezvousInfo, PunchedUdpSocket, gen_rendezvous_info,
                     SimpleUdpHolePunchServer, SimpleTcpHolePunchServer, tcp_punch_hole};
-
+use time;
 
 use sender_receiver::CrustMsg;
 use connection::{RaiiTcpAcceptor, UtpRendezvousConnectMode};
@@ -122,6 +122,7 @@ pub struct Service {
     bootstrap: RaiiBootstrap,
     our_keys: (PublicKey, SecretKey),
     connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+    connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
     mapping_context: Arc<MappingContext>,
     tcp_acceptor_port: Option<u16>,
     utp_acceptor_port: Option<u16>,
@@ -138,7 +139,11 @@ impl Service {
     /// Constructs a service. User needs to create an asynchronous channel, and provide
     /// the sender half to this method. Receiver will receive all `Event`s from this library.
     pub fn new(event_tx: ::CrustEventSender) -> Result<Service, Error> {
-        Service::with_config(event_tx, &try!(read_config_file()))
+        let start_time = time::SteadyTime::now();
+        let ret = Service::with_config(event_tx, &try!(read_config_file()));
+        let duration = time::SteadyTime::now() - start_time;
+        debug!("Service::new took {}", duration);
+        ret
     }
 
     /// Constructs a service with the given config. User needs to create an asynchronous channel,
@@ -184,6 +189,7 @@ impl Service {
         }
 
         let connection_map = Arc::new(Mutex::new(HashMap::new()));
+        let connecting_map = Arc::new(Mutex::new(HashMap::new()));
 
         mapping_context.add_simple_udp_servers(config.udp_mapper_servers.clone());
         mapping_context.add_simple_tcp_servers(config.tcp_mapper_servers.clone());
@@ -193,6 +199,7 @@ impl Service {
                                            our_keys.0.clone(),
                                            event_tx.clone(),
                                            connection_map.clone(),
+                                           connecting_map.clone(),
                                            bootstrap_cache.clone(),
                                            mapping_context.clone(),
                                            config.enable_tcp,
@@ -224,6 +231,7 @@ impl Service {
             bootstrap: bootstrap,
             our_keys: our_keys,
             connection_map: connection_map,
+            connecting_map: connecting_map,
             mapping_context: mapping_context.clone(),
             tcp_acceptor_port: config.tcp_acceptor_port,
             utp_acceptor_port: config.utp_acceptor_port,
@@ -255,6 +263,7 @@ impl Service {
                                                                         self.event_tx.clone(),
                                                                         self.connection_map
                                                                             .clone(),
+                                                                        self.connecting_map.clone(),
                                                                         self.bootstrap_cache
                                                                             .clone(),
                                                                         self.expected_peers
@@ -273,6 +282,7 @@ impl Service {
                                                                 self.our_keys.0.clone(),
                                                                 self.event_tx.clone(),
                                                                 self.connection_map.clone(),
+                                                                self.connecting_map.clone(),
                                                                 self.bootstrap_cache.clone(),
                                                                 self.mapping_context.clone())));
         Ok(())
@@ -343,6 +353,7 @@ impl Service {
     pub fn connect(&self,
                    our_connection_info: OurConnectionInfo,
                    their_connection_info: TheirConnectionInfo) {
+
         let their_id = their_connection_info.id;
         if their_id == self.id() {
             return;
@@ -353,6 +364,22 @@ impl Service {
                 .into_iter()
                 .all(Vec::is_empty) {
             return;
+        }
+
+        {
+            let start_time = time::SteadyTime::now();
+            let mut connecting_map = unwrap_result!(self.connecting_map.lock());
+            debug!("Calling Service::connect. peer_id == {}", their_id);
+            match connecting_map.entry(their_id) {
+                hash_map::Entry::Occupied(oe) => {
+                    panic!("Tried to connect to peer that we're already trying to connect to!\
+                            peer_id == {}, connecting for {}", their_id,
+                            start_time - *oe.get());
+                },
+                hash_map::Entry::Vacant(ve) => {
+                    let _ = ve.insert(start_time);
+                },
+            };
         }
 
         let _ = self.expected_peers.lock().unwrap().insert(their_id);
@@ -382,11 +409,14 @@ impl Service {
                 let result_tx = result_tx.clone();
                 let bootstrap_cache = bootstrap_cache.clone();
                 let static_contact_info = static_contact_info.clone();
+                let connecting_map = self.connecting_map.clone();
+
                 let _ = thread!("Service::connect tcp direct", move || {
                     match connection::connect_tcp_endpoint(tcp_addr,
                                                            our_public_key,
                                                            event_tx,
                                                            connection_map,
+                                                           connecting_map,
                                                            Some(expected_peers),
                                                            Some(their_id)) {
                         Err(err) => {
@@ -417,6 +447,7 @@ impl Service {
                 let result_tx = result_tx.clone();
                 let priv_tcp_info = our_connection_info.priv_tcp_info;
                 let is_alive = self.is_alive.clone();
+                let connecting_map = self.connecting_map.clone();
 
                 let _ = thread!("Service::connect tcp rendezvous", move || {
                     let res = tcp_punch_hole(tcp_socket,
@@ -430,6 +461,7 @@ impl Service {
                     match res {
                         Ok(tcp_stream) => {
                             match connection::tcp_rendezvous_connect(connection_map,
+                                                                     connecting_map,
                                                                      event_tx,
                                                                      tcp_stream,
                                                                      their_id) {
@@ -462,6 +494,7 @@ impl Service {
                 let connection_map = connection_map.clone();
                 let result_tx = result_tx.clone();
                 let is_alive = self.is_alive.clone();
+                let connecting_map = self.connecting_map.clone();
 
                 let _ = thread!("Service::connect utp rendezvous", move || {
                     let res = PunchedUdpSocket::punch_hole(udp_socket, priv_udp_info, udp_info)
@@ -486,7 +519,8 @@ impl Service {
                                                              UtpRendezvousConnectMode::Normal(their_id),
                                                              our_public_key.clone(),
                                                              event_tx,
-                                                             connection_map) {
+                                                             connection_map,
+                                                             connecting_map) {
                         Err(err) => {
                             let err_msg = format!("Utp rendezvous connect failed: {}", err);
                             let err = io::Error::new(err.kind(), err_msg);
@@ -500,7 +534,9 @@ impl Service {
             };
         }
 
+        let connecting_map_cloned = self.connecting_map.clone();
         let _ = thread!("Service::connect aggregate results", move || {
+            let connecting_map = connecting_map_cloned;
             let mut errors: Vec<io::Error> = Vec::new();
             loop {
                 match result_rx.recv() {
@@ -519,6 +555,19 @@ impl Service {
                             let _ = write!(err_str, " ({} of {}) {}", i + 1, len, e);
                         }
                         let err = io::Error::new(io::ErrorKind::TimedOut, err_str);
+                        
+                        let mut connecting_map = unwrap_result!(connecting_map.lock());
+                        let stop_time = time::SteadyTime::now();
+                        match connecting_map.entry(their_id) {
+                            hash_map::Entry::Occupied(oe) => {
+                                let duration = stop_time - oe.remove();
+                                debug!("Service::connect took {} (timed out), peer_id == {}", duration, their_id);
+                            },
+                            hash_map::Entry::Vacant(..) => {
+                                panic!("connecting_map empty! (timed out) peer_id == {}", their_id);
+                            },
+                        }
+
                         let _ = event_tx.send(Event::NewPeer(Err(err), their_id));
                         return;
                     }
@@ -633,6 +682,7 @@ mod test {
     use crossbeam;
     use void::Void;
     use maidsafe_utilities::event_sender::{MaidSafeObserver, MaidSafeEventCategory};
+    use maidsafe_utilities;
 
     #[derive(Clone, Copy)]
     enum Protocol {
@@ -731,6 +781,8 @@ mod test {
 
     #[test]
     fn start_stop_service() {
+        let _ = maidsafe_utilities::log::init(true);
+
         let config = gen_config();
         let (event_sender, _category_rx, _) = get_event_sender();
         let _service = unwrap_result!(Service::with_config(event_sender, &config));
@@ -874,16 +926,22 @@ mod test {
 
     #[test]
     fn bootstrap_connection_tcp_two_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         bootstrap_connection_two_services(Protocol::Tcp);
     }
 
     #[test]
     fn bootstrap_connection_udp_two_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         bootstrap_connection_two_services(Protocol::Udp);
     }
 
     #[test]
     fn bootstrap_connection_tcp_and_udp_two_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         bootstrap_connection_two_services(Protocol::Both);
     }
 
@@ -1005,31 +1063,43 @@ mod test {
 
     #[test]
     fn direct_connection_tcp_two_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         peer_to_peer_connection_two_services(Protocol::Tcp, true, true)
     }
 
     #[test]
     fn direct_connection_udp_two_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         peer_to_peer_connection_two_services(Protocol::Udp, true, true)
     }
 
     #[test]
     fn semi_direct_connection_tcp_two_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         peer_to_peer_connection_two_services(Protocol::Tcp, true, false)
     }
 
     #[test]
     fn semi_direct_connection_udp_two_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         peer_to_peer_connection_two_services(Protocol::Udp, true, false)
     }
 
     #[test]
     fn rendezvous_connection_tcp_two_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         peer_to_peer_connection_two_services(Protocol::Tcp, false, false);
     }
 
     #[test]
     fn rendezvous_connection_udp_two_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         peer_to_peer_connection_two_services(Protocol::Udp, false, false);
     }
 
@@ -1194,16 +1264,22 @@ mod test {
 
     #[test]
     fn rendezvous_connection_udp_three_services() {
+        let _ = maidsafe_utilities::log::init(true);
+
         rendezvous_connection_three_services(Protocol::Udp);
     }
 
     #[test]
     fn rendezvous_connection_tcp_three_service() {
+        let _ = maidsafe_utilities::log::init(true);
+
         rendezvous_connection_three_services(Protocol::Tcp);
     }
 
     #[test]
     fn drop_disconnects() {
+        let _ = maidsafe_utilities::log::init(true);
+
         let beacon_port = gen_beacon_port();
 
         let config_0 = gen_config_with_beacon(beacon_port);
@@ -1259,6 +1335,8 @@ mod test {
         use std::net;
         use std::str::FromStr;
 
+        let _ = maidsafe_utilities::log::init(true);
+
         let mut contact_info = StaticContactInfo::default();
 
         let invalid_addrs = vec![
@@ -1284,7 +1362,9 @@ mod test {
 
     #[test]
     fn new_peer_is_not_raised_if_only_one_party_calls_connect() {
-         let config_0 = gen_config();
+        let _ = maidsafe_utilities::log::init(true);
+
+        let config_0 = gen_config();
         let config_1 = gen_config();
 
         let (event_sender_0, _category_rx_0, event_rx_0) = get_event_sender();

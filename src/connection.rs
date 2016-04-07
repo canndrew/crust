@@ -15,7 +15,7 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{hash_map, HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -136,6 +136,7 @@ pub fn connect(peer_contact: StaticContactInfo,
                our_public_key: PublicKey,
                event_tx: ::CrustEventSender,
                connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+               connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
                bootstrap_cache: Arc<Mutex<BootstrapHandler>>,
                mc: &MappingContext,
                tcp_enabled: bool,
@@ -153,6 +154,7 @@ pub fn connect(peer_contact: StaticContactInfo,
                                        our_public_key,
                                        event_tx.clone(),
                                        connection_map.clone(),
+                                       connecting_map.clone(),
                                        None,
                                        None) {
                 Ok(()) => return Ok(()),
@@ -228,7 +230,8 @@ pub fn connect(peer_contact: StaticContactInfo,
                                         UtpRendezvousConnectMode::BootstrapConnect,
                                         our_public_key.clone(),
                                         event_tx.clone(),
-                                        connection_map.clone()) {
+                                        connection_map.clone(),
+                                        connecting_map.clone()) {
                                         Ok(()) => return Ok(()),
                                         Err(_) => continue,
                                     }
@@ -254,6 +257,7 @@ pub fn connect(peer_contact: StaticContactInfo,
 }
 
 pub fn tcp_rendezvous_connect(connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+                              connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
                               event_tx: ::CrustEventSender,
                               tcp_stream: TcpStream,
                               their_id: PeerId)
@@ -265,6 +269,16 @@ pub fn tcp_rendezvous_connect(connection_map: Arc<Mutex<HashMap<PeerId, Vec<Conn
     let network_tx = RaiiSender(writer);
 
     let mut cm = connection_map.lock().unwrap();
+    let mut connecting_map = unwrap_result!(connecting_map.lock());
+    let stop_time = time::SteadyTime::now();
+    match connecting_map.entry(their_id) {
+        hash_map::Entry::Occupied(oe) => {
+            let duration = stop_time - oe.remove();
+            debug!("Service::connect took {} (tcp rendezvous), peer_id == {}", duration, their_id);
+        },
+        hash_map::Entry::Vacant(..) => {
+        },
+    }
     let _ = notify_new_connection(&cm, &their_id, Event::NewPeer(Ok(()), their_id), &event_tx);
 
     let connection = register_tcp_connection(connection_map.clone(),
@@ -283,6 +297,7 @@ pub fn connect_tcp_endpoint(remote_addr: SocketAddr,
                             our_public_key: PublicKey,
                             event_tx: ::CrustEventSender,
                             connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+                            connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
                             expected_peers: Option<Arc<Mutex<HashSet<PeerId>>>>,
                             their_expected_id: Option<PeerId>)
                             -> io::Result<()> {
@@ -338,6 +353,16 @@ pub fn connect_tcp_endpoint(remote_addr: SocketAddr,
                     if let Some(expected_peers) = expected_peers {
                         let mut expected_peers = expected_peers.lock().unwrap();
                         if expected_peers.remove(&their_id) {
+                            let mut connecting_map = unwrap_result!(connecting_map.lock());
+                            let stop_time = time::SteadyTime::now();
+                            match connecting_map.entry(their_id) {
+                                hash_map::Entry::Occupied(oe) => {
+                                    let duration = stop_time - oe.remove();
+                                    debug!("Service::connect took {} (tcp static connect), peer_id == {}", duration, their_id);
+                                },
+                                hash_map::Entry::Vacant(..) => {
+                                },
+                            }
                             (their_id, Some(Event::NewPeer(Ok(()), their_id)))
                         } else {
                             (their_id, None)
@@ -434,6 +459,7 @@ pub fn start_tcp_accept(port: u16,
                         our_public_key: PublicKey,
                         event_tx: ::CrustEventSender,
                         connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+                        connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
                         // TODO(canndrew): We currently don't share static contact infos on
                         // accepting a connection
                         _bootstrap_cache: Arc<Mutex<BootstrapHandler>>,
@@ -534,6 +560,17 @@ pub fn start_tcp_accept(port: u16,
                         continue;
                     }
 
+                    let mut connecting_map = unwrap_result!(connecting_map.lock());
+                    let stop_time = time::SteadyTime::now();
+                    match connecting_map.entry(peer_id) {
+                        hash_map::Entry::Occupied(oe) => {
+                            let duration = stop_time - oe.remove();
+                            debug!("Service::connect took {} (tcp static accept), peer_id == {}", duration, peer_id);
+                        },
+                        hash_map::Entry::Vacant(..) => {
+                        },
+                    }
+
                     (peer_id, Event::NewPeer(Ok(()), peer_id))
                 }
                 Ok(m) => {
@@ -584,7 +621,8 @@ pub fn utp_rendezvous_connect(udp_socket: UdpSocket,
                               mode: UtpRendezvousConnectMode,
                               our_public_key: PublicKey,
                               event_tx: ::CrustEventSender,
-                              connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>)
+                              connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
+                              connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>)
                               -> io::Result<()> {
     let (network_input, writer) = try!(utp_connections::rendezvous_connect_utp(udp_socket,
                                                                                their_addr));
@@ -617,6 +655,16 @@ pub fn utp_rendezvous_connect(udp_socket: UdpSocket,
                         let connections = guard.entry(their_id)
                                                .or_insert_with(|| Vec::with_capacity(1));
                         if connections.is_empty() {
+                            let mut connecting_map = unwrap_result!(connecting_map.lock());
+                            let stop_time = time::SteadyTime::now();
+                            match connecting_map.entry(their_id) {
+                                hash_map::Entry::Occupied(oe) => {
+                                    let duration = stop_time - oe.remove();
+                                    debug!("Service::connect took {} (utp rendezvous), peer_id == {}", duration, their_id);
+                                },
+                                hash_map::Entry::Vacant(..) => {
+                                },
+                            }
                             let _ = event_tx.send(Event::NewPeer(Ok(()), their_id));
                         }
                     }
