@@ -123,6 +123,7 @@ pub struct Service {
     our_keys: (PublicKey, SecretKey),
     connection_map: Arc<Mutex<HashMap<PeerId, Vec<Connection>>>>,
     connecting_map: Arc<Mutex<HashMap<PeerId, time::SteadyTime>>>,
+    preparing_map: Arc<Mutex<HashMap<u32, time::SteadyTime>>>,
     mapping_context: Arc<MappingContext>,
     tcp_acceptor_port: Option<u16>,
     utp_acceptor_port: Option<u16>,
@@ -232,6 +233,7 @@ impl Service {
             our_keys: our_keys,
             connection_map: connection_map,
             connecting_map: connecting_map,
+            preparing_map: Arc::new(Mutex::new(HashMap::new())),
             mapping_context: mapping_context.clone(),
             tcp_acceptor_port: config.tcp_acceptor_port,
             utp_acceptor_port: config.utp_acceptor_port,
@@ -585,17 +587,44 @@ impl Service {
         let our_static_contact_info = self.static_contact_info.clone();
         let event_tx = self.event_tx.clone();
 
+        {
+            let start_time = time::SteadyTime::now();
+            debug!("Service::prepare_connection_info({}) starting", result_token);
+            let mut preparing_map = unwrap_result!(self.preparing_map.lock());
+            match preparing_map.entry(result_token) {
+                hash_map::Entry::Occupied(oe) => {
+                    panic!("Service::prepare_connection_info called twice for result_token {}, duration == {}", result_token, start_time - oe.remove());
+                },
+                hash_map::Entry::Vacant(ve) => {
+                    let _ = ve.insert(start_time);
+                },
+            };
+        }
+
         let mapping_context = self.mapping_context.clone();
         let our_pub_key = self.our_keys.0.clone();
         let tcp_enabled = self.tcp_enabled;
         let utp_enabled = self.utp_enabled;
+        let preparing_map_clone = self.preparing_map.clone();
         let _joiner = thread!("PrepareContactInfo", move || {
+            let preparing_map = preparing_map_clone;
             let (udp_socket, (our_priv_udp_info, our_pub_udp_info)) = if utp_enabled {
                 match MappedUdpSocket::new(&mapping_context).result_log() {
                     Ok(MappedUdpSocket { socket, endpoints }) => {
                         (Some(socket), gen_rendezvous_info(endpoints))
                     }
                     Err(e) => {
+                        let mut preparing_map = unwrap_result!(preparing_map.lock());
+                        match preparing_map.entry(result_token) {
+                            hash_map::Entry::Occupied(oe) => {
+                                let stop_time = time::SteadyTime::now();
+                                debug!("Service::prepare_connection_info({}) finishing: {}", result_token, stop_time - oe.remove());
+                            },
+                            hash_map::Entry::Vacant(..) => {
+                                panic!("preparing_map empty! result_token == {}", result_token);
+                            },
+                        };
+
                         let _ =
                             event_tx.send(Event::ConnectionInfoPrepared(ConnectionInfoResult {
                                 result_token: result_token,
@@ -614,6 +643,17 @@ impl Service {
                         (Some(socket), gen_rendezvous_info(endpoints))
                     }
                     Err(e) => {
+                        let mut preparing_map = unwrap_result!(preparing_map.lock());
+                        match preparing_map.entry(result_token) {
+                            hash_map::Entry::Occupied(oe) => {
+                                let stop_time = time::SteadyTime::now();
+                                debug!("Service::prepare_connection_info({}) finishing: {}", result_token, stop_time - oe.remove());
+                            },
+                            hash_map::Entry::Vacant(..) => {
+                                panic!("preparing_map empty! result_token == {}", result_token);
+                            },
+                        };
+
                         let _ =
                             event_tx.send(Event::ConnectionInfoPrepared(ConnectionInfoResult {
                                 result_token: result_token,
@@ -626,6 +666,16 @@ impl Service {
                 (None, gen_rendezvous_info(vec![]))
             };
 
+            let mut preparing_map = unwrap_result!(preparing_map.lock());
+            match preparing_map.entry(result_token) {
+                hash_map::Entry::Occupied(oe) => {
+                    let stop_time = time::SteadyTime::now();
+                    debug!("Service::prepare_connection_info({}) finishing: {}", result_token, stop_time - oe.remove());
+                },
+                hash_map::Entry::Vacant(..) => {
+                    panic!("preparing_map empty! result_token == {}", result_token);
+                },
+            };
             let send = Event::ConnectionInfoPrepared(ConnectionInfoResult {
                 result_token: result_token,
                 result: Ok(OurConnectionInfo {
