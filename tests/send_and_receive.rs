@@ -52,8 +52,7 @@ fn spawn_receiving_node(expected_connections: usize) -> JoinHandle<usize> {
     let mut service = unwrap_result!(Service::new(event_sender));
 
     service.start_service_discovery();
-    let _ = unwrap_result!(service.start_listening_tcp());
-    let _ = unwrap_result!(service.start_listening_utp());
+    let _ = unwrap_result!(service.start_listening());
 
     // Wait for BootstrapFinished so we know this node is already listening when
     // this function returns.
@@ -109,7 +108,7 @@ fn spawn_sending_node() -> JoinHandle<usize> {
             match event {
                 Event::BootstrapConnect(peer_id) => {
                     for _ in 0..NUM_MESSAGES_PER_SENDER {
-                        let _ = unwrap_result!(service.send(&peer_id, message.clone()));
+                        let _ = unwrap_result!(service.send(peer_id, message.clone()));
                         num_messages += 1;
                         thread::yield_now();
                     }

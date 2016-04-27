@@ -46,6 +46,7 @@ extern crate docopt;
 extern crate rand;
 extern crate term;
 extern crate time;
+extern crate transport;
 
 use docopt::Docopt;
 use rand::random;
@@ -55,15 +56,15 @@ use std::cmp;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::Sender;
 use std::io;
-use std::net;
 use std::str::FromStr;
 use std::thread;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::collections::{BTreeMap, HashMap};
 
-use crust::{Service, Protocol, Endpoint, ConnectionInfoResult,
-            SocketAddr, OurConnectionInfo,
+use transport::stream::StreamProtocolInfo;
+use crust::{Service, ConnectionInfoResult,
+            OurConnectionInfo, Config,
             PeerId};
 
 static USAGE: &'static str = "
@@ -185,11 +186,17 @@ impl Network {
             };
             */
 
-            if let Some(conn_info) = service.connection_info(node) {
-                println!("    [{}] {}   {} <--> {} [{}][{}]",
-                         id, node, conn_info.our_addr, conn_info.their_addr, conn_info.protocol,
-                         if conn_info.closed { "closed" } else { "open" }
-                );
+            if let Some(stream_info) = service.stream_info(node) {
+                match stream_info.protocol {
+                    StreamProtocolInfo::Tcp { local_addr, peer_addr } => {
+                        println!("    [{}] {}   {} <--> {} [tcp] #{:016x}",
+                                 id, node, local_addr, peer_addr, stream_info.connection_id);
+                    },
+                    StreamProtocolInfo::Utp { local_addr, peer_addr } => {
+                        println!("    [{}] {}   {} <--> {} [utp] #{:016x}",
+                                 id, node, local_addr, peer_addr, stream_info.connection_id);
+                    },
+                };
             }
         }
 
@@ -327,8 +334,9 @@ fn main() {
         ::maidsafe_utilities::event_sender::MaidSafeObserver::new(channel_sender,
                                                                   crust_event_category,
                                                                   category_tx);
-    let mut config = unwrap_result!(::crust::read_config_file());
+    let mut config = unwrap_result!(Config::read());
 
+    /*
     if args.flag_disable_tcp {
         config.enable_tcp = false;
         config.tcp_acceptor_port = None;
@@ -337,16 +345,20 @@ fn main() {
         config.enable_utp = false;
         config.utp_acceptor_port = None;
     }
+    */
 
     config.service_discovery_port = args.flag_discovery_port;
 
-    let mut service = unwrap_result!(Service::with_config(event_sender, &config));
+    let mut service = unwrap_result!(Service::with_config(event_sender, config));
+    /*
     if !args.flag_disable_tcp {
         unwrap_result!(service.start_listening_tcp());
     }
     if !args.flag_disable_utp {
         unwrap_result!(service.start_listening_utp());
     }
+    */
+    unwrap_result!(service.start_listening());
     service.start_service_discovery();
     let service = Arc::new(Mutex::new(service));
     let service_cloned = service.clone();
@@ -378,21 +390,13 @@ fn main() {
                             },
                             crust::Event::ConnectionInfoPrepared(result) => {
                                 let ConnectionInfoResult {
-                                    result_token, result } = result;
-                                let info = match result {
-                                    Ok(i) => i,
-                                    Err(e) => {
-                                        println!("Failed to prepare connection info\ncause: {}", e);
-                                        continue;
-                                    }
-                                };
+                                    result_token, priv_info, pub_info } = result;
                                 println!("Prepared connection info with id {}", result_token);
-                                let their_info = info.to_their_connection_info();
-                                let info_json = unwrap_result!(json::encode(&their_info));
+                                let info_json = unwrap_result!(json::encode(&pub_info));
                                 println!("Share this info with the peer you want to connect to:");
                                 println!("{}", info_json);
                                 let mut network = unwrap_result!(network2.lock());
-                                if let Some(_) = network.our_connection_infos.insert(result_token, info) {
+                                if let Some(_) = network.our_connection_infos.insert(result_token, priv_info) {
                                     panic!("Got the same result_token twice!");
                                 };
                             },
@@ -485,7 +489,7 @@ fn main() {
             let times = cmp::max(1, speed / length);
             let sleep_time = cmp::max(1, 1000 / times);
             for _ in 0..times {
-                unwrap_result!(unwrap_result!(service.lock()).send(peer_id, generate_random_vec_u8(length as usize)));
+                unwrap_result!(unwrap_result!(service.lock()).send(*peer_id, generate_random_vec_u8(length as usize)));
                 debug!("Sent a message with length of {} bytes to {:?}",
                        length, peer_id);
                 std::thread::sleep(Duration::from_millis(sleep_time));
@@ -543,8 +547,8 @@ fn main() {
                 UserCommand::Send(peer_index, message) => {
                     let network = unwrap_result!(network.lock());
                     match network.get_peer_id(peer_index) {
-                        Some(ref mut peer_id) => {
-                            unwrap_result!(unwrap_result!(service.lock()).send(peer_id, message.into_bytes()));
+                        Some(peer_id) => {
+                            unwrap_result!(unwrap_result!(service.lock()).send(*peer_id, message.into_bytes()));
                         }
                         None => println!("Invalid connection #"),
                     }
@@ -553,7 +557,7 @@ fn main() {
                     let mut network = unwrap_result!(network.lock());
                     let msg = message.into_bytes();
                     for (_, peer_id) in network.nodes.iter_mut() {
-                        unwrap_result!(unwrap_result!(service.lock()).send(peer_id, msg.clone()));
+                        unwrap_result!(unwrap_result!(service.lock()).send(*peer_id, msg.clone()));
                     }
                 }
                 UserCommand::List => {
@@ -690,38 +694,3 @@ fn parse_user_command(cmd: String) -> Option<UserCommand> {
     }
 }
 
-/// /////////////////////////////////////////////////////////////////////////////
-///
-/// Parse transport::Endpoint
-///
-/// /////////////////////////////////////////////////////////////////////////////
-#[derive(Debug)]
-struct PeerEndpoint {
-    pub addr: Endpoint,
-}
-
-impl Decodable for PeerEndpoint {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<PeerEndpoint, D::Error> {
-        let str = try!(decoder.read_str());
-        if !str.ends_with(')') {
-            return Err(decoder.error("Protocol missing"));
-        }
-        let address = match net::SocketAddr::from_str(&str[4..str.len() - 1]) {
-            Ok(addr) => SocketAddr(addr),
-            Err(_) => {
-                return Err(decoder.error(&format!("Could not decode {} as valid IPv4 or IPv6 \
-                                                   address.",
-                                                  str)));
-            }
-        };
-        if str.starts_with("Tcp(") {
-            Ok(PeerEndpoint { addr: Endpoint::from_socket_addr(Protocol::Tcp, address) })
-        } else if str.starts_with("Utp(") {
-            Ok(PeerEndpoint { addr: Endpoint::from_socket_addr(Protocol::Utp, address) })
-        } else {
-            Err(decoder.error("Unrecognized protocol"))
-        }
-    }
-}
-
-// /////////////////////////////////////////////////////////////////////////////

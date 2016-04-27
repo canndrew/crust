@@ -158,8 +158,7 @@ fn run(config: &Config) -> Report {
     let our_peer_id = service.id();
 
     if config.start_listening {
-        unwrap_result!(service.start_listening_tcp());
-        unwrap_result!(service.start_listening_utp());
+        unwrap_result!(service.start_listening());
     }
 
     if config.start_service_discovery {
@@ -291,7 +290,7 @@ fn handle_messages(config: &Config,
                     }
 
                     if peers.lock().unwrap().contains(&peer_id) {
-                        unwrap_result!(service.send(&peer_id, message_bytes.clone()));
+                        unwrap_result!(service.send(peer_id, message_bytes.clone()));
                         sent_at = time::now();
 
                         *stats.entry(format!("{:?}", peer_id)).or_insert(0) += 1;

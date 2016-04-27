@@ -45,55 +45,43 @@
 extern crate itertools;
 #[macro_use]
 extern crate log;
-extern crate net2;
 extern crate rand;
 extern crate rustc_serialize;
-extern crate time;
-extern crate utp;
 #[macro_use]
 extern crate maidsafe_utilities;
 extern crate socket_addr;
-extern crate get_if_addrs;
 extern crate sodiumoxide;
 extern crate config_file_handler;
 extern crate service_discovery;
 extern crate nat_traversal;
 #[cfg(test)]
 extern crate void;
+#[cfg(test)]
 extern crate crossbeam;
 
 #[allow(unused_extern_crates)] // Needed because the crate is only used for macros
 #[macro_use]
 extern crate quick_error;
+extern crate transport;
+extern crate w_result;
 
 /// Crust Observers will be informed of crust events on this
 pub type CrustEventSender = ::maidsafe_utilities::event_sender::MaidSafeObserver<Event>;
-pub use config_handler::{read_config_file, write_config_file};
+pub use config::Config;
 pub use service::{ConnectionInfoResult, OurConnectionInfo, Service, TheirConnectionInfo,
                   DEFAULT_BEACON_PORT};
 pub use event::Event;
-pub use endpoint::{Endpoint, Protocol};
-pub use socket_addr::SocketAddr;
 pub use static_contact_info::StaticContactInfo;
 pub use error::Error;
 pub use peer_id::PeerId;
 
+mod connection;
 mod error;
 mod service;
 mod bootstrap;
-mod connection;
-mod listener_message;
-mod endpoint;
 mod bootstrap_handler;
-mod config_handler;
-mod util;
-mod tcp_connections;
-mod utp_connections;
-mod sender_receiver;
 mod static_contact_info;
-mod utp_wrapper;
 mod event;
-mod socket_utils;
-mod ip_info;
+mod config;
 mod peer_id;
-mod udp_listener;
+mod crust_msg;

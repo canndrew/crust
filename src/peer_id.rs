@@ -48,3 +48,4 @@ impl Rand for PeerId {
         PeerId(box_::gen_keypair().0)
     }
 }
+
