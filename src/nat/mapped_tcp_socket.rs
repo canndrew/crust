@@ -22,11 +22,13 @@ use nat::mapping_context::MappingContext;
 
 const REQUEST_MAGIC_CONSTANT: [u8; 4] = [b'E', b'C', b'H', b'O'];
 
+#[derive(Debug)]
 struct WritingSocket {
     socket: TcpStream,
     written: usize,
 }
 
+#[derive(Debug)]
 struct ReadingSocket {
     socket: TcpStream,
     read_data: Vec<u8>,
@@ -86,6 +88,7 @@ impl<F> MappingTcpSocket<F>
                     written: 0usize,
                 };
                 let _ = writing_sockets.insert(token, writing_socket);
+                debug!("Connecting to {} {:?}", server_addr, token);
             }
             let _ = core.insert_state(context,
                                       Rc::new(RefCell::new(MappingTcpSocket {
@@ -98,6 +101,7 @@ impl<F> MappingTcpSocket<F>
                                           context: context,
                                       })));
         } else {
+            debug!("No servers, finishing immediately");
             finished(core, event_loop, socket, mapped_addrs);
         }
         Ok(())
@@ -135,6 +139,10 @@ impl<F> MappingTcpSocket<F>
                event_loop: &mut EventLoop<Core>,
                token: Token,
                event_set: EventSet) {
+        debug!("Processing {:?} {:?}", token, event_set);
+        debug!("writing_sockets: {:#?}", self.writing_sockets);
+        debug!("reading_sockets: {:#?}", self.reading_sockets);
+
         if event_set.is_error() {
             if let hash_map::Entry::Occupied(oe) = self.writing_sockets.entry(token) {
                 let writing_socket = oe.remove();
@@ -168,6 +176,7 @@ impl<F> MappingTcpSocket<F>
                     writing_socket.socket
                         .try_write(&REQUEST_MAGIC_CONSTANT[writing_socket.written..])
                 };
+                debug!("res == {:?}", res);
                 match res {
                     Err(e) => {
                         debug!("Error writing to socket: {}", e);
@@ -177,6 +186,7 @@ impl<F> MappingTcpSocket<F>
                     Ok(Some(n)) => {
                         oe.get_mut().written += n;
                         if oe.get_mut().written >= REQUEST_MAGIC_CONSTANT.len() {
+                            debug!("Done writing");
                             let writing_socket = oe.remove();
                             match event_loop.reregister(&writing_socket.socket,
                                                         token,
@@ -209,6 +219,7 @@ impl<F> MappingTcpSocket<F>
                     let reading_socket = oe.get_mut();
                     reading_socket.socket.try_read(&mut buf[..])
                 };
+                debug!("res == {:?}", res);
                 match res {
                     Err(e) => {
                         debug!("Error writing to socket: {}", e);
@@ -216,6 +227,7 @@ impl<F> MappingTcpSocket<F>
                     }
                     Ok(None) => (),
                     Ok(Some(n)) => {
+                        debug!("read {} bytes", n);
                         if n == 0 {
                             let reading_socket = oe.remove();
                             let _ = core.remove_context(token);
@@ -269,6 +281,8 @@ impl<F> State for MappingTcpSocket<F>
              token: Token,
              event_set: EventSet) {
         self.process(core, event_loop, token, event_set);
+
+        debug!("external_addrs == {}", self.external_addrs);
 
         if self.external_addrs >= 2 ||
            (self.writing_sockets.is_empty() && self.reading_sockets.is_empty()) {
