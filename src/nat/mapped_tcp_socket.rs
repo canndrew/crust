@@ -228,7 +228,19 @@ impl<F> MappingTcpSocket<F>
                     Ok(None) => (),
                     Ok(Some(n)) => {
                         debug!("read {} bytes", n);
-                        if n == 0 {
+                        oe.get_mut().read_data.extend_from_slice(&buf[..n]);
+                        let len = oe.get_mut().read_data.len();
+                        if len > MAX_RECV_MSG_SIZE {
+                            debug!("Overly long response from mapping server: {} bytes", len);
+                            let reading_socket = oe.remove();
+                            let _ = core.remove_context(token);
+                            match event_loop.deregister(&reading_socket.socket) {
+                                Ok(()) => (),
+                                Err(e) => debug!("Error deregistering socket: {}", e),
+                            }
+                            return;
+                        }
+                        if n == 0 || event_set.is_hup() {
                             let reading_socket = oe.remove();
                             let _ = core.remove_context(token);
                             match event_loop.deregister(&reading_socket.socket) {
@@ -248,18 +260,6 @@ impl<F> MappingTcpSocket<F>
                             if !self.mapped_addrs.contains(&response) {
                                 self.mapped_addrs.push(response);
                                 self.external_addrs += 1;
-                            }
-                        } else {
-                            oe.get_mut().read_data.extend_from_slice(&buf[..n]);
-                            let len = oe.get_mut().read_data.len();
-                            if len > MAX_RECV_MSG_SIZE {
-                                debug!("Overly long response from mapping server: {} bytes", len);
-                                let reading_socket = oe.remove();
-                                let _ = core.remove_context(token);
-                                match event_loop.deregister(&reading_socket.socket) {
-                                    Ok(()) => (),
-                                    Err(e) => debug!("Error deregistering socket: {}", e),
-                                }
                             }
                         }
                     }
