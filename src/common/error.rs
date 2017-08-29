@@ -17,8 +17,8 @@
 
 use common::CoreMessage;
 use maidsafe_utilities::serialisation::SerialisationError;
-use mio;
 use mio::timer::TimerError;
+use futures;
 use std::io;
 
 quick_error! {
@@ -60,7 +60,7 @@ quick_error! {
             description("Read zero bytes from the socket - indicates EOF")
         }
         /// CoreMessage send error
-        CoreMsgTx(e: mio::channel::SendError<CoreMessage>) {
+        CoreMsgTx(e: futures::sync::mpsc::SendError<CoreMessage>) {
             description(e.description())
             display("CoreMessage send error: {}", e)
             cause(e)

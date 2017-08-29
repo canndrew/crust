@@ -25,6 +25,7 @@
 
 // For explanation of lint checks, run `rustc -W help` or see
 // https://github.com/maidsafe/QA/blob/master/Documentation/Rust%20Lint%20Checks.md
+/*
 #![forbid(exceeding_bitshifts, mutable_transmutes, no_mangle_const_items,
           unknown_crate_types, warnings)]
 #![deny(deprecated, improper_ctypes, missing_docs,
@@ -32,6 +33,7 @@
         private_no_mangle_fns, private_no_mangle_statics, stable_features,
         unconditional_recursion, unknown_lints, unsafe_code, unused, unused_allocation,
         unused_attributes, unused_comparisons, unused_features, unused_parens, while_true)]
+*/
 #![warn(trivial_casts, trivial_numeric_casts, unused_extern_crates, unused_import_braces,
         unused_qualifications, unused_results)]
 #![allow(box_pointers, fat_ptr_transmutes, missing_copy_implementations,
@@ -67,6 +69,9 @@ extern crate rust_sodium;
 extern crate serde;
 extern crate tiny_keccak;
 extern crate notify;
+extern crate futures;
+extern crate tokio_core;
+extern crate void;
 
 #[cfg(windows)]
 extern crate winapi;

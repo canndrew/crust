@@ -16,11 +16,10 @@
 // relating to use of the SAFE Network Software.
 
 use self::get_ext_addr::GetExtAddr;
-use common::{Core, CoreMessage, CoreTimer, State, Uid};
+use common::{Core, CoreMessage, CoreTimer, FakePoll, Timeout, State, Uid};
 use igd::PortMappingProtocol;
 use maidsafe_utilities::thread;
-use mio::{Poll, Token};
-use mio::timer::Timeout;
+use mio::Token;
 use nat::{MappingContext, NatError, util};
 use net2::TcpBuilder;
 use std::any::Any;
@@ -49,13 +48,13 @@ pub struct MappedTcpSocket<F, UID> {
 
 impl<F, UID> MappedTcpSocket<F, UID>
 where
-    F: FnOnce(&mut Core, &Poll, TcpBuilder, Vec<SocketAddr>) + Any,
+    F: FnOnce(&mut Core, &FakePoll, TcpBuilder, Vec<SocketAddr>) + Any,
     UID: Uid,
 {
     /// Start mapping a tcp socket
     pub fn start(
         core: &mut Core,
-        poll: &Poll,
+        poll: &FakePoll,
         port: u16,
         mc: &MappingContext,
         finish: F,
@@ -77,6 +76,7 @@ where
             };
             let tx = core.sender().clone();
             let addr_igd = SocketAddrV4::new(*ip, addr.port());
+            println!("starting an IGD thread");
             let _ = thread::named("IGD-Address-Mapping", move || {
                 let res =
                     gateway.get_any_address(PortMappingProtocol::TCP, addr_igd, 0, "MaidSafeNat");
@@ -124,7 +124,7 @@ where
         // Ask Stuns
         for stun in mc.peer_stuns() {
             let self_weak = Rc::downgrade(&state);
-            let handler = move |core: &mut Core, poll: &Poll, child_token, res| {
+            let handler = move |core: &mut Core, poll: &FakePoll, child_token, res| {
                 if let Some(self_rc) = self_weak.upgrade() {
                     self_rc.borrow_mut().handle_stun_resp(
                         core,
@@ -135,15 +135,20 @@ where
                 }
             };
 
+            println!("starting a stun query");
             if let Ok(child) = GetExtAddr::<UID>::start(core, poll, addr, stun, Box::new(handler)) {
                 let _ = state.borrow_mut().stun_children.insert(child);
             }
         }
 
+        println!("At the end of the socket mapping");
+
         if state.borrow().stun_children.is_empty() && state.borrow().igd_children == 0 {
+            println!("socket mapping unsuccessful. Continuing");
             return Ok(state.borrow_mut().terminate(core, poll));
         }
 
+        println!("MappedTcpSocket::start - inserting self {:?}", token);
         let _ = core.insert_state(token, state);
 
         Ok(())
@@ -152,10 +157,11 @@ where
     fn handle_stun_resp(
         &mut self,
         core: &mut Core,
-        poll: &Poll,
+        poll: &FakePoll,
         child: Token,
         res: Result<SocketAddr, ()>,
     ) {
+        println!("got a stun response");
         let _ = self.stun_children.remove(&child);
         if let Ok(our_ext_addr) = res {
             self.mapped_addrs.push(our_ext_addr);
@@ -165,7 +171,8 @@ where
         }
     }
 
-    fn handle_igd_resp(&mut self, core: &mut Core, poll: &Poll, our_ext_addr: SocketAddr) {
+    fn handle_igd_resp(&mut self, core: &mut Core, poll: &FakePoll, our_ext_addr: SocketAddr) {
+        println!("got an igd response");
         self.igd_children -= 1;
         self.mapped_addrs.push(our_ext_addr);
         if self.stun_children.is_empty() && self.igd_children == 0 {
@@ -173,7 +180,7 @@ where
         }
     }
 
-    fn terminate_children(&mut self, core: &mut Core, poll: &Poll) {
+    fn terminate_children(&mut self, core: &mut Core, poll: &FakePoll) {
         for token in self.stun_children.drain() {
             let child = match core.get_state(token) {
                 Some(state) => state,
@@ -187,15 +194,17 @@ where
 
 impl<F, UID> State for MappedTcpSocket<F, UID>
 where
-    F: FnOnce(&mut Core, &Poll, TcpBuilder, Vec<SocketAddr>)
+    F: FnOnce(&mut Core, &FakePoll, TcpBuilder, Vec<SocketAddr>)
         + Any,
     UID: Uid,
 {
-    fn timeout(&mut self, core: &mut Core, poll: &Poll, _: u8) {
+    fn timeout(&mut self, core: &mut Core, poll: &FakePoll, _: u8) {
+        println!("MappedTcpSocket: timeout");
         self.terminate(core, poll)
     }
 
-    fn terminate(&mut self, core: &mut Core, poll: &Poll) {
+    fn terminate(&mut self, core: &mut Core, poll: &FakePoll) {
+        println!("MappedTcpSocket: terminating");
         self.terminate_children(core, poll);
         let _ = core.remove_state(self.token);
         let _ = core.cancel_timeout(&self.timeout);

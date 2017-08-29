@@ -312,8 +312,8 @@ fn drop_disconnects() {
 // connections but then does nothing. It's purpose is to test that we detect
 // and handle non-responsive peers correctly.
 mod broken_peer {
-    use common::{Core, Message, Socket, State};
-    use mio::{Poll, PollOpt, Ready, Token};
+    use common::{Core, FakePoll, Message, Socket, State};
+    use mio::{Token, Ready};
     use mio::tcp::TcpListener;
     use rand;
     use std::any::Any;
@@ -324,10 +324,11 @@ mod broken_peer {
     pub struct Listen(TcpListener, Token);
 
     impl Listen {
-        pub fn start(core: &mut Core, poll: &Poll, listener: TcpListener) {
+        pub fn start(core: &mut Core, poll: &FakePoll, listener: TcpListener) {
             let token = core.get_new_token();
+            println!("in broken_peer::Listen::start() token == {:?}", token);
 
-            unwrap!(poll.register(&listener, token, Ready::readable(), PollOpt::edge()));
+            unwrap!(poll.register(&listener, token, Ready::readable()));
 
             let state = Listen(listener, token);
             let _ = core.insert_state(token, Rc::new(RefCell::new(state)));
@@ -335,9 +336,10 @@ mod broken_peer {
     }
 
     impl State for Listen {
-        fn ready(&mut self, core: &mut Core, poll: &Poll, _: Ready) {
+        fn ready(&mut self, core: &mut Core, poll: &FakePoll, _: Ready) {
+            println!("in broken_peer::Listen::ready()");
             let (socket, _) = unwrap!(self.0.accept());
-            unwrap!(poll.deregister(&self.0));
+            unwrap!(poll.deregister(self.1));
 
             let socket = Socket::wrap(socket);
             Connection::start(core, poll, self.1, socket);
@@ -351,8 +353,9 @@ mod broken_peer {
     struct Connection(Socket, Token);
 
     impl Connection {
-        fn start(core: &mut Core, poll: &Poll, token: Token, socket: Socket) {
-            unwrap!(poll.register(&socket, token, Ready::readable(), PollOpt::edge()));
+        fn start(core: &mut Core, poll: &FakePoll, token: Token, socket: Socket) {
+            println!("in broken_peer::Connection::start() token == {:?}", token);
+            unwrap!(poll.register(&socket, token, Ready::readable()));
 
             let state = Connection(socket, token);
             let _ = core.insert_state(token, Rc::new(RefCell::new(state)));
@@ -360,7 +363,8 @@ mod broken_peer {
     }
 
     impl State for Connection {
-        fn ready(&mut self, core: &mut Core, poll: &Poll, kind: Ready) {
+        fn ready(&mut self, core: &mut Core, poll: &FakePoll, kind: Ready) {
+            println!("in broken_peer::Connection::ready()");
             if kind.is_error() || kind.is_hup() {
                 return self.terminate(core, poll);
             }
@@ -383,9 +387,9 @@ mod broken_peer {
             }
         }
 
-        fn terminate(&mut self, core: &mut Core, poll: &Poll) {
+        fn terminate(&mut self, core: &mut Core, poll: &FakePoll) {
             let _ = core.remove_state(self.1);
-            unwrap!(poll.deregister(&self.0));
+            unwrap!(poll.deregister(self.1));
         }
 
         fn as_any(&mut self) -> &mut Any {
@@ -404,7 +408,7 @@ fn drop_peer_when_no_message_received_within_inactivity_period() {
     rust_sodium::init();
 
     // Spin up the non-responsive peer.
-    let el = unwrap!(spawn_event_loop(0, None));
+    let el = unwrap!(spawn_event_loop(1000, None));
 
     let bind_addr = unwrap!(SocketAddr::from_str("127.0.0.1:0"), "Could not parse addr");
     let listener = unwrap!(TcpListener::bind(&bind_addr), "Could not bind listener");

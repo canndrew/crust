@@ -19,9 +19,9 @@ mod check_reachability;
 mod exchange_msg;
 
 use self::exchange_msg::ExchangeMsg;
-use common::{Core, NameHash, Socket, State, Uid};
+use common::{Core, FakePoll, NameHash, Socket, State, Uid};
 use main::{ConfigFile, ConnectionMap, Event};
-use mio::{Poll, PollOpt, Ready, Token};
+use mio::{Ready, Token};
 use mio::tcp::TcpListener;
 use nat::{MappedTcpSocket, MappingContext};
 use nat::ip_addr_is_global;
@@ -50,7 +50,7 @@ pub struct ConnectionListener<UID: Uid> {
 impl<UID: Uid> ConnectionListener<UID> {
     pub fn start(
         core: &mut Core,
-        poll: &Poll,
+        poll: &FakePoll,
         handshake_timeout_sec: Option<u64>,
         port: u16,
         force_include_port: bool,
@@ -65,7 +65,8 @@ impl<UID: Uid> ConnectionListener<UID> {
     ) {
         let event_tx_0 = event_tx.clone();
         let finish =
-            move |core: &mut Core, poll: &Poll, socket, mut mapped_addrs: Vec<SocketAddr>| {
+            move |core: &mut Core, poll: &FakePoll, socket, mut mapped_addrs: Vec<SocketAddr>| {
+                println!("In ConnectionListener::start()'s socket-mapping finishing callback");
                 let checker = |s: &SocketAddr| ip_addr_is_global(&s.ip()) && s.port() == port;
                 if force_include_port && port != 0 && !mapped_addrs.iter().any(checker) {
                     let global_addrs: Vec<_> = mapped_addrs
@@ -112,7 +113,7 @@ impl<UID: Uid> ConnectionListener<UID> {
 
     fn handle_mapped_socket(
         core: &mut Core,
-        poll: &Poll,
+        poll: &FakePoll,
         timeout_sec: Option<u64>,
         socket: TcpBuilder,
         mapped_addrs: Vec<SocketAddr>,
@@ -132,7 +133,6 @@ impl<UID: Uid> ConnectionListener<UID> {
             &listener,
             token,
             Ready::readable() | Ready::error() | Ready::hup(),
-            PollOpt::edge(),
         )?;
 
         *unwrap!(our_listeners.lock()) = mapped_addrs.into_iter().collect();
@@ -155,10 +155,11 @@ impl<UID: Uid> ConnectionListener<UID> {
         Ok(())
     }
 
-    fn accept(&self, core: &mut Core, poll: &Poll) {
+    fn accept(&self, core: &mut Core, poll: &FakePoll) {
         loop {
             match self.listener.accept() {
                 Ok((socket, _)) => {
+                    println!("ConnectionListener accepting connection");
                     if let Err(e) = ExchangeMsg::start(
                         core,
                         poll,
@@ -189,7 +190,8 @@ impl<UID: Uid> ConnectionListener<UID> {
 }
 
 impl<UID: Uid> State for ConnectionListener<UID> {
-    fn ready(&mut self, core: &mut Core, poll: &Poll, kind: Ready) {
+    fn ready(&mut self, core: &mut Core, poll: &FakePoll, kind: Ready) {
+        println!("In ConnectionListener::ready() kind == {:?}", kind);
         if kind.is_error() || kind.is_hup() {
             self.terminate(core, poll);
             let _ = self.event_tx.send(Event::ListenerFailed);
@@ -198,8 +200,8 @@ impl<UID: Uid> State for ConnectionListener<UID> {
         }
     }
 
-    fn terminate(&mut self, core: &mut Core, poll: &Poll) {
-        let _ = poll.deregister(&self.listener);
+    fn terminate(&mut self, core: &mut Core, poll: &FakePoll) {
+        let _ = poll.deregister(self.token);
         let _ = core.remove_state(self.token);
     }
 
@@ -268,6 +270,7 @@ mod tests {
         let uid = rand::random();
         unwrap!(
             el.send(CoreMessage::new(move |core, poll| {
+                println!("tests::start_listener: before ConnectionListener::start");
                 ConnectionListener::start(
                     core,
                     poll,
@@ -283,9 +286,12 @@ mod tests {
                     Token(LISTENER_TOKEN),
                     crust_sender,
                 );
+                println!("tests::start_listener: after ConnectionListener::start");
             })),
             "Could not send to tx"
         );
+        
+        println!("tests::start_listener waiting for Event::ListenerStarted");
 
         for it in event_rx.iter() {
             match it {
@@ -293,6 +299,8 @@ mod tests {
                 _ => panic!("Unexpected event notification - {:?}", it),
             }
         }
+        
+        println!("tests::start_listener got Event::ListenerStarted");
 
         let (tx, rx) = mpsc::channel();
         unwrap!(
@@ -370,7 +378,9 @@ mod tests {
         our_uid: UniqueId,
         listener: &Listener,
     ) {
+        println!("trying to connect to listener");
         let mut us = connect_to_listener(listener);
+        println!("QQQ");
 
         let expected_kind = match ext_reachability {
             ExternalReachability::NotRequired => CrustUser::Client,
@@ -383,11 +393,13 @@ mod tests {
             ext_reachability,
         )));
         unwrap!(write(&mut us, &message), "Could not write.");
+        println!("WWW");
 
         match unwrap!(read::<Message<UniqueId>>(&mut us), "Could not read.") {
             Message::BootstrapGranted(peer_uid) => assert_eq!(peer_uid, listener.uid),
             msg => panic!("Unexpected message: {:?}", msg),
         }
+        println!("EEE");
 
         match unwrap!(listener.event_rx.recv(), "Could not read event channel") {
             Event::BootstrapAccept(peer_id, peer_kind) => {
