@@ -54,9 +54,10 @@ impl TaskChannelMap {
         mut msg: TaskMessage,
     ) {
         loop {
+            let handle = &self.handle;
             msg = match self.channel_map
                 .entry(token)
-                .or_insert(TaskState::new(core.clone(), &self.handle))
+                .or_insert_with(|| TaskState::spawn(core.clone(), handle))
                 .send(msg) {
                 Err(send_error) => send_error.into_inner(),
                 Ok(()) => return,
@@ -105,7 +106,7 @@ struct TaskState {
 
 impl TaskState {
     // Create a task on the tokio event loop, returning a channel to it.
-    pub fn new(core: Rc<RefCell<Core>>, handle: &Handle) -> UnboundedSender<TaskMessage> {
+    pub fn spawn(core: Rc<RefCell<Core>>, handle: &Handle) -> UnboundedSender<TaskMessage> {
         let (tx, rx) = mpsc::unbounded();
         let task_state = TaskState {
             core: core,
