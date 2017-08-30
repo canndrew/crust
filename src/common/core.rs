@@ -30,6 +30,8 @@ enum TaskMessage {
     ChangeState(Option<Rc<RefCell<State>>>),
 }
 
+/// Maintains a set of tasks on the the tokio event loop, one for each token.
+/// Each task has a channel which can be used to send messages to it.
 struct TaskChannelMap {
     handle: Handle,
     channel_map: HashMap<Token, UnboundedSender<TaskMessage>>,
@@ -44,22 +46,29 @@ impl TaskChannelMap {
         Rc::new(RefCell::new(ret))
     }
 
+    /// Send a message to the task identified by the token. Will create the task if need be.
     pub fn send_msg_and_maybe_create_task(&mut self, core: Rc<RefCell<Core>>, token: Token, mut msg: TaskMessage) {
         loop {
             msg = match self.channel_map.entry(token).or_insert(TaskState::new(core.clone(), &self.handle)).send(msg) {
                 Err(send_error) => send_error.into_inner(),
                 Ok(()) => return,
             };
+
+            // We had a task registered under this token, but it died. Drop the defunct sender,
+            // loop around and create a new task.
             let _ = self.channel_map.remove(&token);
         }
     }
 
+    /// Send a message to the task identified by the token. The task must exist or else this method
+    /// will panic.
     pub fn send_msg_or_panic(&mut self, token: Token, msg: TaskMessage) {
         let channel = unwrap!(self.channel_map.get(&token), "Unknown token/task!");
         unwrap!(channel.send(msg))
     }
 }
 
+/// Interface to the set of crust state machines.
 pub struct Core {
     task_channels: Rc<RefCell<TaskChannelMap>>,
     states: HashMap<Token, Rc<RefCell<State>>>,
@@ -69,12 +78,14 @@ pub struct Core {
     self_ref: Option<Rc<RefCell<Core>>>,
 }
 
+/// Handles {,re,de}registration of file-descriptors on tokens.
 pub struct FakePoll {
     task_channels: Rc<RefCell<TaskChannelMap>>,
     core: Rc<RefCell<Core>>,
     handle: Handle,
 }
 
+/// The state machine which runs on the tokio event loop, executing a `State`.
 struct TaskState {
     core: Rc<RefCell<Core>>,
     channel: UnboundedReceiver<TaskMessage>,
@@ -85,6 +96,7 @@ struct TaskState {
 }
 
 impl TaskState {
+    // Create a task on the tokio event loop, returning a channel to it.
     pub fn new(core: Rc<RefCell<Core>>, handle: &Handle) -> UnboundedSender<TaskMessage> {
         let (tx, rx) = mpsc::unbounded();
         let task_state = TaskState {
@@ -108,6 +120,7 @@ impl Future for TaskState {
         let mut core = self.core.borrow_mut();
         let poll = core.make_poll();
         loop {
+            // Process all incoming messages.
             match self.channel.poll()? {
                 Async::Ready(Some(msg)) => {
                     match msg {
@@ -135,20 +148,25 @@ impl Future for TaskState {
                 Async::NotReady => break,
             }
         }
+        // Only process timeouts and file events if we have a state.
         if let Some(ref state) = self.state {
             let mut i = 0;
             while i < self.timeouts.len() {
+                // Process each timeout
                 {
                     let mut timeout = &mut self.timeouts[i];
                     match timeout.cancel_channel.poll() {
-                        Ok(Async::Ready(())) => (),
+                        Ok(Async::Ready(())) => (), // Timeout cancelled.
                         _ => {
                             match timeout.tokio_timeout.poll() {
                                 Ok(Async::NotReady) => {
+                                    // We are still waiting on this timeout.
+                                    // Proceed to next timeout without removing this one.
                                     i += 1;
                                     continue;
                                 },
                                 Ok(Async::Ready(())) => {
+                                    // Timeout fired.
                                     state.borrow_mut().timeout(&mut core, &poll, timeout.timer_id);
                                 },
                                 Err(e) => {
@@ -158,8 +176,11 @@ impl Future for TaskState {
                         },
                     }
                 };
+                // We are no longer waiting on this timeout. So remove it.
                 let _ = self.timeouts.swap_remove(i);
             }
+            // If ready_mask is None then we either don't have a file descriptor, or it was
+            // deregistered.
             if let Some(ready_mask) = self.ready_mask {
                 let poll_evented = unwrap!(self.poll_evented.as_ref(), "This can't not be set if ready_mask is set");
                 if let Async::Ready(ready) = poll_evented.poll_ready(ready_mask) {
@@ -174,8 +195,10 @@ impl Future for TaskState {
             }
         }
         if self.ready_mask.is_none() && self.timeouts.is_empty() {
+            // We're not waiting on any IO events or timeouts, so we can let this task die.
             Ok(Async::Ready(()))
         } else {
+            // This task is still doing something. Keep it running.
             Ok(Async::NotReady)
         }
     }
@@ -225,6 +248,8 @@ impl Core {
     }
 
     pub fn set_timeout(&mut self, interval: Duration, core_timer: CoreTimer) -> common::Result<Timeout> {
+        // Tell the task with the given token to wake up on a timeout.
+
         let core = unwrap!(self.self_ref.clone());
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let timeout_data = TimeoutData {
@@ -244,6 +269,7 @@ impl Core {
 
     pub fn cancel_timeout(&mut self, timeout: &Timeout) -> Option<CoreTimer> {
         if let Some(inner) = timeout.inner.borrow_mut().take() {
+            // Tell the task to cancel the timeout (if it still exists).
             let _ = inner.cancel_channel.send(());
             Some(inner.core_timer)
         } else {
@@ -278,8 +304,13 @@ impl Core {
 impl FakePoll {
     pub fn register<E: Evented + 'static>(&self, e: &E, token: Token, ready: Ready) -> io::Result<()> {
         let core = self.core.clone();
+
+        // We don't actually need to keep the `Evented` object around after calling
+        // `PollEvented::new`, So we set it to `None` (since we can't keep it).
         let mut pollable = PollEvented::new(FakeEvented::new(e), &self.handle)?;
         pollable.get_mut().ptr = None;
+
+
         let msg = TaskMessage::Register(pollable, ready);
         self.task_channels.borrow_mut().send_msg_and_maybe_create_task(core, token, msg);
         Ok(())
@@ -408,6 +439,10 @@ impl Evented for FakeEvented {
         interest: Ready, 
         opts: PollOpt
     ) -> io::Result<()> {
+        // We know this is memory-safe since we set `ptr` to `None` immediately after registering
+        // the `Evented` with tokio's event loop, while the `Evented` is still alive and in-scope.
+        // If these functions somehow get called when they're not meant to, the `Option` will make
+        // sure we panic instead of segfault/UB.
         unsafe {
             (*unwrap!(self.ptr)).register(poll, token, interest, opts)
         }
