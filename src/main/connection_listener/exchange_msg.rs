@@ -61,7 +61,6 @@ impl<UID: Uid> ExchangeMsg<UID> {
         event_tx: ::CrustEventSender<UID>,
     ) -> ::Res<()> {
         let token = core.get_new_token();
-        println!("in ExchangeMsg::start: token == {:?}", token);
 
         let kind = Ready::error() | Ready::hup() | Ready::readable();
         poll.register(&socket, token, kind)?;
@@ -99,7 +98,6 @@ impl<UID: Uid> ExchangeMsg<UID> {
 
         let _ = core.insert_state(token, state);
 
-        println!("leaving ExchangeMsg::start");
         Ok(())
     }
 
@@ -459,7 +457,6 @@ impl<UID: Uid> ExchangeMsg<UID> {
 
 impl<UID: Uid> State for ExchangeMsg<UID> {
     fn ready(&mut self, core: &mut Core, poll: &FakePoll, kind: Ready) {
-        println!("ExchangeMsg::ready");
         if kind.is_error() || kind.is_hup() {
             self.terminate(core, poll);
         } else {
@@ -473,7 +470,6 @@ impl<UID: Uid> State for ExchangeMsg<UID> {
     }
 
     fn terminate(&mut self, core: &mut Core, poll: &FakePoll) {
-        println!("ExchangeMsg::terminate");
         self.terminate_childern(core, poll);
         let _ = core.remove_state(self.token);
 
@@ -501,7 +497,6 @@ impl<UID: Uid> State for ExchangeMsg<UID> {
     }
 
     fn timeout(&mut self, core: &mut Core, poll: &FakePoll, _timer_id: u8) {
-        println!("ExchangeMsg::timeout");
         debug!("Exchange message timed out. Terminating direct connection request.");
         self.terminate(core, poll)
     }

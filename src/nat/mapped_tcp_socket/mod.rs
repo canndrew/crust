@@ -76,7 +76,6 @@ where
             };
             let tx = core.sender().clone();
             let addr_igd = SocketAddrV4::new(*ip, addr.port());
-            println!("starting an IGD thread");
             let _ = thread::named("IGD-Address-Mapping", move || {
                 let res =
                     gateway.get_any_address(PortMappingProtocol::TCP, addr_igd, 0, "MaidSafeNat");
@@ -135,20 +134,15 @@ where
                 }
             };
 
-            println!("starting a stun query");
             if let Ok(child) = GetExtAddr::<UID>::start(core, poll, addr, stun, Box::new(handler)) {
                 let _ = state.borrow_mut().stun_children.insert(child);
             }
         }
 
-        println!("At the end of the socket mapping");
-
         if state.borrow().stun_children.is_empty() && state.borrow().igd_children == 0 {
-            println!("socket mapping unsuccessful. Continuing");
             return Ok(state.borrow_mut().terminate(core, poll));
         }
 
-        println!("MappedTcpSocket::start - inserting self {:?}", token);
         let _ = core.insert_state(token, state);
 
         Ok(())
@@ -161,7 +155,6 @@ where
         child: Token,
         res: Result<SocketAddr, ()>,
     ) {
-        println!("got a stun response");
         let _ = self.stun_children.remove(&child);
         if let Ok(our_ext_addr) = res {
             self.mapped_addrs.push(our_ext_addr);
@@ -172,7 +165,6 @@ where
     }
 
     fn handle_igd_resp(&mut self, core: &mut Core, poll: &FakePoll, our_ext_addr: SocketAddr) {
-        println!("got an igd response");
         self.igd_children -= 1;
         self.mapped_addrs.push(our_ext_addr);
         if self.stun_children.is_empty() && self.igd_children == 0 {
@@ -202,12 +194,10 @@ where
     UID: Uid,
 {
     fn timeout(&mut self, core: &mut Core, poll: &FakePoll, _: u8) {
-        println!("MappedTcpSocket: timeout");
         self.terminate(core, poll)
     }
 
     fn terminate(&mut self, core: &mut Core, poll: &FakePoll) {
-        println!("MappedTcpSocket: terminating");
         self.terminate_children(core, poll);
         let _ = core.remove_state(self.token);
         let _ = core.cancel_timeout(&self.timeout);

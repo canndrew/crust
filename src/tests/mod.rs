@@ -326,7 +326,6 @@ mod broken_peer {
     impl Listen {
         pub fn start(core: &mut Core, poll: &FakePoll, listener: TcpListener) {
             let token = core.get_new_token();
-            println!("in broken_peer::Listen::start() token == {:?}", token);
 
             unwrap!(poll.register(&listener, token, Ready::readable()));
 
@@ -337,7 +336,6 @@ mod broken_peer {
 
     impl State for Listen {
         fn ready(&mut self, core: &mut Core, poll: &FakePoll, _: Ready) {
-            println!("in broken_peer::Listen::ready()");
             let (socket, _) = unwrap!(self.0.accept());
             unwrap!(poll.deregister(self.1));
 
@@ -354,7 +352,6 @@ mod broken_peer {
 
     impl Connection {
         fn start(core: &mut Core, poll: &FakePoll, token: Token, socket: Socket) {
-            println!("in broken_peer::Connection::start() token == {:?}", token);
             unwrap!(poll.register(&socket, token, Ready::readable()));
 
             let state = Connection(socket, token);
@@ -364,7 +361,6 @@ mod broken_peer {
 
     impl State for Connection {
         fn ready(&mut self, core: &mut Core, poll: &FakePoll, kind: Ready) {
-            println!("in broken_peer::Connection::ready()");
             if kind.is_error() || kind.is_hup() {
                 return self.terminate(core, poll);
             }
