@@ -16,8 +16,8 @@
 // relating to use of the SAFE Network Software.
 
 use super::check_reachability::CheckReachability;
-use common::{BootstrapDenyReason, Core, CoreTimer, CrustUser, ExternalReachability, FakePoll, Message,
-             NameHash, Timeout, Priority, Socket, State, Uid};
+use common::{BootstrapDenyReason, Core, CoreTimer, CrustUser, ExternalReachability, FakePoll,
+             Message, NameHash, Priority, Socket, State, Timeout, Uid};
 use main::{ActiveConnection, ConfigFile, ConnectionCandidate, ConnectionId, ConnectionMap, Event};
 use mio::{Ready, Token};
 use nat::ip_addr_is_global;

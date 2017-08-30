@@ -1,18 +1,18 @@
 use common::{self, State};
+use futures;
+use futures::{Async, Future, Stream, future};
+use futures::sync::{mpsc, oneshot};
+use futures::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use maidsafe_utilities::thread::{self, Joiner};
 use mio::{Evented, Poll, PollOpt, Ready, Token};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io;
 use std::rc::Rc;
 use std::time::Duration;
-use std::io;
+use tokio_core;
 use tokio_core::reactor;
 use tokio_core::reactor::{Handle, PollEvented};
-use tokio_core;
-use futures::{future, Async, Future, Stream};
-use futures::sync::{oneshot, mpsc};
-use futures::sync::mpsc::{UnboundedSender, UnboundedReceiver};
-use futures;
 
 pub struct CoreMessage(Option<Box<FnMut(&mut Core, &FakePoll) + Send>>);
 
@@ -47,9 +47,17 @@ impl TaskChannelMap {
     }
 
     /// Send a message to the task identified by the token. Will create the task if need be.
-    pub fn send_msg_and_maybe_create_task(&mut self, core: Rc<RefCell<Core>>, token: Token, mut msg: TaskMessage) {
+    pub fn send_msg_and_maybe_create_task(
+        &mut self,
+        core: Rc<RefCell<Core>>,
+        token: Token,
+        mut msg: TaskMessage,
+    ) {
         loop {
-            msg = match self.channel_map.entry(token).or_insert(TaskState::new(core.clone(), &self.handle)).send(msg) {
+            msg = match self.channel_map
+                .entry(token)
+                .or_insert(TaskState::new(core.clone(), &self.handle))
+                .send(msg) {
                 Err(send_error) => send_error.into_inner(),
                 Ok(()) => return,
             };
@@ -127,24 +135,24 @@ impl Future for TaskState {
                         TaskMessage::Register(poll_evented, ready) => {
                             self.poll_evented = Some(poll_evented);
                             self.ready_mask = Some(ready);
-                        },
+                        }
                         TaskMessage::Reregister(ready) => {
                             self.ready_mask = Some(ready);
-                        },
+                        }
                         TaskMessage::Deregister => {
                             self.ready_mask = None;
-                        },
+                        }
                         TaskMessage::AddTimeout(timeout_data) => {
                             self.timeouts.push(timeout_data);
-                        },
+                        }
                         TaskMessage::ChangeState(state) => {
                             self.state = state;
-                        },
+                        }
                     }
-                },
+                }
                 Async::Ready(None) => {
                     return Ok(Async::Ready(()));
-                },
+                }
                 Async::NotReady => break,
             }
         }
@@ -164,16 +172,16 @@ impl Future for TaskState {
                                     // Proceed to next timeout without removing this one.
                                     i += 1;
                                     continue;
-                                },
+                                }
                                 Ok(Async::Ready(())) => {
                                     // Timeout fired.
                                     state.borrow_mut().timeout(&mut core, &poll, timeout.timer_id);
-                                },
+                                }
                                 Err(e) => {
                                     warn!("Error in timeout: {}", e);
-                                },
+                                }
                             }
-                        },
+                        }
                     }
                 };
                 // We are no longer waiting on this timeout. So remove it.
@@ -182,7 +190,10 @@ impl Future for TaskState {
             // If ready_mask is None then we either don't have a file descriptor, or it was
             // deregistered.
             if let Some(ready_mask) = self.ready_mask {
-                let poll_evented = unwrap!(self.poll_evented.as_ref(), "This can't not be set if ready_mask is set");
+                let poll_evented = unwrap!(
+                    self.poll_evented.as_ref(),
+                    "This can't not be set if ready_mask is set"
+                );
                 if let Async::Ready(ready) = poll_evented.poll_ready(ready_mask) {
                     state.borrow_mut().ready(&mut core, &poll, ready);
                     if ready.is_readable() {
@@ -220,7 +231,12 @@ struct TimeoutInner {
 }
 
 impl Core {
-    fn new(token_counter_start: usize, tx: UnboundedSender<CoreMessage>, handle: Handle, task_channels: Rc<RefCell<TaskChannelMap>>) -> Rc<RefCell<Core>> {
+    fn new(
+        token_counter_start: usize,
+        tx: UnboundedSender<CoreMessage>,
+        handle: Handle,
+        task_channels: Rc<RefCell<TaskChannelMap>>,
+    ) -> Rc<RefCell<Core>> {
         let core = Core {
             task_channels: task_channels,
             states: HashMap::new(),
@@ -247,7 +263,11 @@ impl Core {
         &self.sender
     }
 
-    pub fn set_timeout(&mut self, interval: Duration, core_timer: CoreTimer) -> common::Result<Timeout> {
+    pub fn set_timeout(
+        &mut self,
+        interval: Duration,
+        core_timer: CoreTimer,
+    ) -> common::Result<Timeout> {
         // Tell the task with the given token to wake up on a timeout.
 
         let core = unwrap!(self.self_ref.clone());
@@ -258,7 +278,9 @@ impl Core {
             timer_id: core_timer.timer_id,
         };
         let msg = TaskMessage::AddTimeout(timeout_data);
-        self.task_channels.borrow_mut().send_msg_and_maybe_create_task(core, core_timer.state_id, msg);
+        self.task_channels
+            .borrow_mut()
+            .send_msg_and_maybe_create_task(core, core_timer.state_id, msg);
         Ok(Timeout {
             inner: RefCell::new(Some(TimeoutInner {
                 cancel_channel: cancel_tx,
@@ -277,10 +299,16 @@ impl Core {
         }
     }
 
-    pub fn insert_state(&mut self, token: Token, state: Rc<RefCell<State>>) -> Option<Rc<RefCell<State>>> {
+    pub fn insert_state(
+        &mut self,
+        token: Token,
+        state: Rc<RefCell<State>>,
+    ) -> Option<Rc<RefCell<State>>> {
         let core = unwrap!(self.self_ref.clone());
         let msg = TaskMessage::ChangeState(Some(state.clone()));
-        self.task_channels.borrow_mut().send_msg_and_maybe_create_task(core, token, msg);
+        self.task_channels
+            .borrow_mut()
+            .send_msg_and_maybe_create_task(core, token, msg);
         self.states.insert(token, state)
     }
 
@@ -290,7 +318,10 @@ impl Core {
 
     pub fn remove_state(&mut self, token: Token) -> Option<Rc<RefCell<State>>> {
         let msg = TaskMessage::ChangeState(None);
-        self.task_channels.borrow_mut().send_msg_or_panic(token, msg);
+        self.task_channels.borrow_mut().send_msg_or_panic(
+            token,
+            msg,
+        );
         self.states.remove(&token)
     }
 
@@ -302,7 +333,12 @@ impl Core {
 }
 
 impl FakePoll {
-    pub fn register<E: Evented + 'static>(&self, e: &E, token: Token, ready: Ready) -> io::Result<()> {
+    pub fn register<E: Evented + 'static>(
+        &self,
+        e: &E,
+        token: Token,
+        ready: Ready,
+    ) -> io::Result<()> {
         let core = self.core.clone();
 
         // We don't actually need to keep the `Evented` object around after calling
@@ -312,19 +348,32 @@ impl FakePoll {
 
 
         let msg = TaskMessage::Register(pollable, ready);
-        self.task_channels.borrow_mut().send_msg_and_maybe_create_task(core, token, msg);
+        self.task_channels
+            .borrow_mut()
+            .send_msg_and_maybe_create_task(core, token, msg);
         Ok(())
     }
 
-    pub fn reregister<E: Evented + 'static>(&self, _e: &E, token: Token, ready: Ready) -> io::Result<()> {
+    pub fn reregister<E: Evented + 'static>(
+        &self,
+        _e: &E,
+        token: Token,
+        ready: Ready,
+    ) -> io::Result<()> {
         let msg = TaskMessage::Reregister(ready);
-        self.task_channels.borrow_mut().send_msg_or_panic(token, msg);
+        self.task_channels.borrow_mut().send_msg_or_panic(
+            token,
+            msg,
+        );
         Ok(())
     }
-    
+
     pub fn deregister(&self, token: Token) -> io::Result<()> {
         let msg = TaskMessage::Deregister;
-        self.task_channels.borrow_mut().send_msg_or_panic(token, msg);
+        self.task_channels.borrow_mut().send_msg_or_panic(
+            token,
+            msg,
+        );
         Ok(())
     }
 }
@@ -365,11 +414,13 @@ pub fn spawn_event_loop(
     }
 
     let tx_clone = tx.clone();
-    let joiner = thread::named(name, move || {
-        match event_loop_impl(token_counter_start, rx, tx_clone) {
-            Ok(()) => trace!("Graceful event loop exit."),
-            Err(e) => error!("Event loop killed due to {:?}", e),
-        }
+    let joiner = thread::named(name, move || match event_loop_impl(
+        token_counter_start,
+        rx,
+        tx_clone,
+    ) {
+        Ok(()) => trace!("Graceful event loop exit."),
+        Err(e) => error!("Event loop killed due to {:?}", e),
     });
 
     Ok(EventLoop {
@@ -378,11 +429,20 @@ pub fn spawn_event_loop(
     })
 }
 
-fn event_loop_impl(token_counter_start: usize, rx: UnboundedReceiver<CoreMessage>, tx: UnboundedSender<CoreMessage>) -> ::Res<()> {
+fn event_loop_impl(
+    token_counter_start: usize,
+    rx: UnboundedReceiver<CoreMessage>,
+    tx: UnboundedSender<CoreMessage>,
+) -> ::Res<()> {
     let mut tokio_core = tokio_core::reactor::Core::new()?;
     let handle = tokio_core.handle();
     let task_channels = TaskChannelMap::new(handle.clone());
-    let core = Core::new(token_counter_start, tx, handle.clone(), task_channels.clone());
+    let core = Core::new(
+        token_counter_start,
+        tx,
+        handle.clone(),
+        task_channels.clone(),
+    );
     let server = rx.for_each(move |crust_msg| {
         let mut f = match crust_msg.0 {
             Some(f) => f,
@@ -425,45 +485,36 @@ struct FakeEvented {
 
 impl FakeEvented {
     pub fn new<E: Evented + 'static>(e: &E) -> FakeEvented {
-        FakeEvented {
-            ptr: Some(e),
-        }
+        FakeEvented { ptr: Some(e) }
     }
 }
 
 impl Evented for FakeEvented {
     fn register(
-        &self, 
-        poll: &Poll, 
-        token: Token, 
-        interest: Ready, 
-        opts: PollOpt
+        &self,
+        poll: &Poll,
+        token: Token,
+        interest: Ready,
+        opts: PollOpt,
     ) -> io::Result<()> {
         // We know this is memory-safe since we set `ptr` to `None` immediately after registering
         // the `Evented` with tokio's event loop, while the `Evented` is still alive and in-scope.
         // If these functions somehow get called when they're not meant to, the `Option` will make
         // sure we panic instead of segfault/UB.
-        unsafe {
-            (*unwrap!(self.ptr)).register(poll, token, interest, opts)
-        }
+        unsafe { (*unwrap!(self.ptr)).register(poll, token, interest, opts) }
     }
 
     fn reregister(
-        &self, 
-        poll: &Poll, 
-        token: Token, 
-        interest: Ready, 
-        opts: PollOpt
+        &self,
+        poll: &Poll,
+        token: Token,
+        interest: Ready,
+        opts: PollOpt,
     ) -> io::Result<()> {
-        unsafe {
-            (*unwrap!(self.ptr)).reregister(poll, token, interest, opts)
-        }
+        unsafe { (*unwrap!(self.ptr)).reregister(poll, token, interest, opts) }
     }
 
     fn deregister(&self, poll: &Poll) -> io::Result<()> {
-        unsafe {
-            (*unwrap!(self.ptr)).deregister(poll)
-        }
+        unsafe { (*unwrap!(self.ptr)).deregister(poll) }
     }
 }
-

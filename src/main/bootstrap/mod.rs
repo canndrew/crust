@@ -20,8 +20,8 @@ mod try_peer;
 
 use self::cache::Cache;
 use self::try_peer::TryPeer;
-use common::{BootstrapDenyReason, Core, CoreTimer, CrustUser, ExternalReachability, FakePoll, NameHash,
-             Socket, State, Timeout, Uid};
+use common::{BootstrapDenyReason, Core, CoreTimer, CrustUser, ExternalReachability, FakePoll,
+             NameHash, Socket, State, Timeout, Uid};
 use main::{ActiveConnection, ConfigFile, ConnectionMap, CrustError, Event};
 use mio::Token;
 use rand::{self, Rng};
@@ -136,10 +136,10 @@ impl<UID: Uid> Bootstrap<UID> {
 
         for peer in peers {
             let self_weak = self.self_weak.clone();
-            let finish = move |core: &mut Core, poll: &FakePoll, child, res| if let Some(self_rc) =
-                self_weak.upgrade()
-            {
-                self_rc.borrow_mut().handle_result(core, poll, child, res)
+            let finish = move |core: &mut Core, poll: &FakePoll, child, res| {
+                if let Some(self_rc) = self_weak.upgrade() {
+                    self_rc.borrow_mut().handle_result(core, poll, child, res)
+                }
             };
 
             if let Ok(child) = TryPeer::start(

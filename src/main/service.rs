@@ -15,8 +15,8 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use common::{self, Core, CoreMessage, CrustUser, EventLoop, ExternalReachability, FakePoll, HASH_SIZE,
-             NameHash, Priority, Uid};
+use common::{self, Core, CoreMessage, CrustUser, EventLoop, ExternalReachability, FakePoll,
+             HASH_SIZE, NameHash, Priority, Uid};
 use main::{ActiveConnection, Bootstrap, ConfigFile, ConfigRefresher, Connect, ConnectionId,
            ConnectionInfoResult, ConnectionListener, ConnectionMap, CrustError, Event,
            PrivConnectionInfo, PubConnectionInfo};

@@ -176,11 +176,7 @@ impl ServiceDiscovery {
             Ready::error() | Ready::hup() | Ready::readable() | Ready::writable()
         };
 
-        Ok(poll.reregister(
-            &self.socket,
-            self.token,
-            kind,
-        )?)
+        Ok(poll.reregister(&self.socket, self.token, kind)?)
     }
 }
 

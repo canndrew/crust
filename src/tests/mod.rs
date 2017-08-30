@@ -313,7 +313,7 @@ fn drop_disconnects() {
 // and handle non-responsive peers correctly.
 mod broken_peer {
     use common::{Core, FakePoll, Message, Socket, State};
-    use mio::{Token, Ready};
+    use mio::{Ready, Token};
     use mio::tcp::TcpListener;
     use rand;
     use std::any::Any;

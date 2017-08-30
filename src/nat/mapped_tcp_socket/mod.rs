@@ -16,7 +16,7 @@
 // relating to use of the SAFE Network Software.
 
 use self::get_ext_addr::GetExtAddr;
-use common::{Core, CoreMessage, CoreTimer, FakePoll, Timeout, State, Uid};
+use common::{Core, CoreMessage, CoreTimer, FakePoll, State, Timeout, Uid};
 use igd::PortMappingProtocol;
 use maidsafe_utilities::thread;
 use mio::Token;
@@ -51,7 +51,7 @@ where
     F: FnOnce(&mut Core, &FakePoll, TcpBuilder, Vec<SocketAddr>) + Any,
     UID: Uid,
 {
-    /// Start mapping a tcp socket
+/// Start mapping a tcp socket
     pub fn start(
         core: &mut Core,
         poll: &FakePoll,
@@ -61,13 +61,13 @@ where
     ) -> Result<(), NatError> {
         let token = core.get_new_token();
 
-        // TODO(Spandan) Ipv6 is not supported in Listener so dealing only with ipv4 right now
+// TODO(Spandan) Ipv6 is not supported in Listener so dealing only with ipv4 right now
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
 
         let socket = util::new_reusably_bound_tcp_socket(&addr)?;
         let addr = socket.local_addr()?;
 
-        // Ask IGD
+// Ask IGD
         let mut igd_children = 0;
         for &(ref ip, ref gateway) in mc.ifv4s() {
             let gateway = match *gateway {
@@ -121,7 +121,7 @@ where
             phantom: PhantomData,
         }));
 
-        // Ask Stuns
+// Ask Stuns
         for stun in mc.peer_stuns() {
             let self_weak = Rc::downgrade(&state);
             let handler = move |core: &mut Core, poll: &FakePoll, child_token, res| {
@@ -194,7 +194,10 @@ where
 
 impl<F, UID> State for MappedTcpSocket<F, UID>
 where
-    F: FnOnce(&mut Core, &FakePoll, TcpBuilder, Vec<SocketAddr>)
+    F: FnOnce(&mut Core,
+           &FakePoll,
+           TcpBuilder,
+           Vec<SocketAddr>)
         + Any,
     UID: Uid,
 {

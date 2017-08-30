@@ -18,7 +18,7 @@
 mod exchange_msg;
 
 use self::exchange_msg::ExchangeMsg;
-use common::{Core, CoreTimer, CrustUser, FakePoll, Timeout, NameHash, Socket, State, Uid};
+use common::{Core, CoreTimer, CrustUser, FakePoll, NameHash, Socket, State, Timeout, Uid};
 use main::{ActiveConnection, ConnectionCandidate, ConnectionMap, CrustError, Event,
            PrivConnectionInfo, PubConnectionInfo};
 use mio::{Ready, Token};
@@ -158,15 +158,15 @@ impl<UID: Uid> Connect<UID> {
         let _ = self.children.remove(&child);
         if let Some(socket) = res {
             let self_weak = self.self_weak.clone();
-            let handler = move |core: &mut Core, poll: &FakePoll, child, res| if let Some(self_rc) =
-                self_weak.upgrade()
-            {
-                self_rc.borrow_mut().handle_connection_candidate(
-                    core,
-                    poll,
-                    child,
-                    res,
-                );
+            let handler = move |core: &mut Core, poll: &FakePoll, child, res| {
+                if let Some(self_rc) = self_weak.upgrade() {
+                    self_rc.borrow_mut().handle_connection_candidate(
+                        core,
+                        poll,
+                        child,
+                        res,
+                    );
+                }
             };
 
             if let Ok(child) = ConnectionCandidate::start(

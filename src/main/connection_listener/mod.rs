@@ -289,7 +289,7 @@ mod tests {
             })),
             "Could not send to tx"
         );
-        
+
         println!("tests::start_listener waiting for Event::ListenerStarted");
 
         for it in event_rx.iter() {
@@ -298,7 +298,7 @@ mod tests {
                 _ => panic!("Unexpected event notification - {:?}", it),
             }
         }
-        
+
         println!("tests::start_listener got Event::ListenerStarted");
 
         let (tx, rx) = mpsc::channel();

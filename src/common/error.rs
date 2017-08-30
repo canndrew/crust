@@ -16,9 +16,9 @@
 // relating to use of the SAFE Network Software.
 
 use common::CoreMessage;
+use futures;
 use maidsafe_utilities::serialisation::SerialisationError;
 use mio::timer::TimerError;
-use futures;
 use std::io;
 
 quick_error! {

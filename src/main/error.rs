@@ -17,8 +17,8 @@
 
 use common::{self, CoreMessage};
 use config_file_handler;
-use maidsafe_utilities::serialisation::SerialisationError;
 use futures;
+use maidsafe_utilities::serialisation::SerialisationError;
 use nat;
 use notify;
 use service_discovery;

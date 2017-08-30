@@ -15,8 +15,8 @@
 // Please review the Licences for the specific language governing permissions and limitations
 // relating to use of the SAFE Network Software.
 
-use common::{BootstrapDenyReason, Core, ExternalReachability, FakePoll, Message, NameHash, Priority, Socket,
-             State, Uid};
+use common::{BootstrapDenyReason, Core, ExternalReachability, FakePoll, Message, NameHash,
+             Priority, Socket, State, Uid};
 use mio::{Ready, Token};
 use std::any::Any;
 use std::cell::RefCell;
@@ -104,7 +104,12 @@ impl<UID: Uid> TryPeer<UID> {
         }
     }
 
-    fn handle_error(&mut self, core: &mut Core, poll: &FakePoll, reason: Option<BootstrapDenyReason>) {
+    fn handle_error(
+        &mut self,
+        core: &mut Core,
+        poll: &FakePoll,
+        reason: Option<BootstrapDenyReason>,
+    ) {
         self.terminate(core, poll);
         let token = self.token;
         let peer = self.peer;
