@@ -191,7 +191,6 @@ impl<UID: Uid> ConnectionListener<UID> {
 
 impl<UID: Uid> State for ConnectionListener<UID> {
     fn ready(&mut self, core: &mut Core, poll: &FakePoll, kind: Ready) {
-        println!("In ConnectionListener::ready() kind == {:?}", kind);
         if kind.is_error() || kind.is_hup() {
             self.terminate(core, poll);
             let _ = self.event_tx.send(Event::ListenerFailed);

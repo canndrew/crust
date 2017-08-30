@@ -29,7 +29,7 @@ pub type Finish<T> = Box<FnMut(&mut Core, &FakePoll, Token, Result<T, ()>)>;
 
 pub struct CheckReachability<T> {
     token: Token,
-    socket: Socket,
+    _socket: Socket,
     timeout: Timeout,
     finish: Finish<T>,
     t: T,
@@ -62,7 +62,7 @@ where
 
         let state = CheckReachability {
             token: token,
-            socket: socket,
+            _socket: socket,
             timeout: timeout,
             finish: finish,
             t: t,

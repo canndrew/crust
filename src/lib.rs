@@ -71,7 +71,6 @@ extern crate tiny_keccak;
 extern crate notify;
 extern crate futures;
 extern crate tokio_core;
-extern crate void;
 
 #[cfg(windows)]
 extern crate winapi;

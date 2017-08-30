@@ -5,14 +5,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
-use std::collections::HashSet;
 use std::io;
-use std::mem;
 use tokio_core::reactor;
 use tokio_core::reactor::{Handle, PollEvented};
 use tokio_core;
 use futures::{future, Async, Future, Stream};
-use futures::future::Either;
 use futures::sync::{oneshot, mpsc};
 use futures::sync::mpsc::{UnboundedSender, UnboundedReceiver};
 use futures;
@@ -58,7 +55,8 @@ impl TaskChannelMap {
     }
 
     pub fn send_msg_or_panic(&mut self, token: Token, msg: TaskMessage) {
-        unwrap!(self.channel_map.get(&token), "Unknown token/task!").send(msg);
+        let channel = unwrap!(self.channel_map.get(&token), "Unknown token/task!");
+        unwrap!(channel.send(msg))
     }
 }
 
@@ -163,15 +161,15 @@ impl Future for TaskState {
                 let _ = self.timeouts.swap_remove(i);
             }
             if let Some(ready_mask) = self.ready_mask {
-                let mut poll_evented = unwrap!(self.poll_evented.as_mut(), "This can't not be set if ready_mask is set");
-                while let Async::Ready(ready) = poll_evented.poll_ready(ready_mask) {
+                let poll_evented = unwrap!(self.poll_evented.as_ref(), "This can't not be set if ready_mask is set");
+                if let Async::Ready(ready) = poll_evented.poll_ready(ready_mask) {
                     state.borrow_mut().ready(&mut core, &poll, ready);
-                }
-                if ready_mask.is_readable() {
-                    poll_evented.need_read();
-                }
-                if ready_mask.is_writable() {
-                    poll_evented.need_write();
+                    if ready.is_readable() {
+                        poll_evented.need_read();
+                    }
+                    if ready.is_writable() {
+                        poll_evented.need_write();
+                    }
                 }
             }
         }
@@ -208,7 +206,7 @@ impl Core {
             handle: handle,
             self_ref: None,
         };
-        let mut core_ref = Rc::new(RefCell::new(core));
+        let core_ref = Rc::new(RefCell::new(core));
         let core_ref_cloned = core_ref.clone();
         core_ref.borrow_mut().self_ref = Some(core_ref_cloned);
         core_ref
@@ -246,7 +244,7 @@ impl Core {
 
     pub fn cancel_timeout(&mut self, timeout: &Timeout) -> Option<CoreTimer> {
         if let Some(inner) = timeout.inner.borrow_mut().take() {
-            inner.cancel_channel.send(());
+            let _ = inner.cancel_channel.send(());
             Some(inner.core_timer)
         } else {
             None
