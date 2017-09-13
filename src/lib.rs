@@ -67,6 +67,10 @@ extern crate rust_sodium;
 extern crate serde;
 extern crate tiny_keccak;
 extern crate notify;
+extern crate futures;
+extern crate void;
+#[macro_use]
+extern crate scoped_tls;
 
 #[cfg(windows)]
 extern crate winapi;
@@ -81,6 +85,7 @@ mod service_discovery;
 mod nat;
 
 pub use common::{CrustUser, MSG_DROP_PRIORITY, Priority, Uid};
+pub use common::{spawn_future_async, PollEvented, Timeout}; // temporatily shutup the warning
 pub use main::{ConfigFile, ConfigSettings, ConnectionInfoResult, CrustError, Event,
                PrivConnectionInfo, PubConnectionInfo, Service};
 
