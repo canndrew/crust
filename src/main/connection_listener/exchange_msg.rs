@@ -31,8 +31,280 @@ use std::mem;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+
 pub const EXCHANGE_MSG_TIMEOUT_SEC: u64 = 10 * 60;
 
+pub fn exchange_msg(
+    timeout_sec: Option<u64>,
+    socket: Socket,
+    accept_bootstrap: bool,
+    our_uid: UID,
+    name_hash: NameHash,
+    cm: ConnectionMap<UID>,
+    config: CrustConfig,
+    event_tx: ::CrustEventSender<UID>,
+) -> BoxFuture<(), ()> {
+    let timeout = Duration::from_secs(
+        timeout_sec.unwrap_or(EXCHANGE_MSG_TIMEOUT_SEC)
+    );
+
+    // Cache the reachability requirement config option, to make sure that it won't be updated
+    // with the rest of the configuration.
+    let require_reachability = unwrap!(config.lock()).cfg.dev.as_ref().map_or(
+        true,
+        |dev_cfg| {
+            !dev_cfg.disable_external_reachability_requirement
+        },
+    );
+
+    socket
+        .into_future()
+        .timeout_at(Instant::now() + timeout)
+        .and_then(|(msg, socket)| {
+            match msg {
+                Ok(Some(Message::BootstrapRequest(
+                    their_uid, their_name_hash, their_ext_reachability,
+                ))) => {
+                    if !self.accept_bootstrap {
+                        trace!("Bootstrapping off us is not allowed");
+                        return future::ok(()).boxed();
+                    }
+                    if let Ok(their_uid) = validate_peer_uid(their_uid) {
+                        return handle_bootstrap_req(socket, their_uid, their_name_hash, their_ext_reachability)
+                            .boxed();
+                    }
+                },
+                Ok(Some(Message::Connect(their_uid, their_name_hash))) => {
+                    if let Ok(their_uid) = validate_peer_uid(their_uid) {
+                        return handle_connect(socket, their_uid, their_name_hash).boxed();
+                    }
+                },
+                Ok(Some(Message::EchoAddrReq)) => {
+                    return handle_echo_addr_req(socket).boxed();
+                },
+                Ok(Some(message)) => {
+                    trace!("Unexpected message in direct connect: {:?}", message);
+                }
+                Ok(None) => (),
+                Err(e) => {
+                    trace!("Failed to read from socket: {:?}", e);
+                },
+            };
+            future::ok(())
+        })
+}
+
+fn handle_bootstrap_req(
+    their_name_hash: NameHash,
+    their_ext_reachability: ExternalReachability,
+) -> BoxFuture<(), ()> {
+    if their_name_hash != our_name_hash {
+        trace!("Rejecting Bootstrapper with an invalid name hash.");
+        return socket.send((Message::BootrapDenied(
+                BootstrapDenyReason::InvalidNameHash,
+            ),
+            0,
+        )).map(|_| ()).boxed();
+    }
+
+    try_update_crust_config();
+
+    match ext_reachability {
+        ExternalReachability::Required { direct_listeners } => {
+            if !is_peer_whitelisted(CrustUser::Node) {
+                trace!("Bootstrapper Node is not whitelisted. Denying bootstrap.");
+                let reason = BootstrapDenyReason::NodeNotWhitelisted;
+                return socket.send((Message::BootstrapDenied(reason), 0)).map(|_| ()).boxed();
+            }
+
+            if !require_reachability {
+                // Skip external reachability checks and allow bootstrap
+                return send_bootstrap_grant(their_uid, CrustUser::Node);
+            }
+
+            let mut reachability_children = Vec::new();
+            for their_listener in direct_listeners.into_iter().filter(|addr| {
+                ip_addr_is_global(&addr.ip())
+            })
+            {
+                reachability_children.push(check_reachability(their_listener));
+            }
+            stream::futures_unordered(reachability)
+                .filter_map(|&reachable| if reachable { Some(()) } else { None })
+                .into_future()
+                .and_then(|(opt, _)| {
+                    if let Some(()) = opt {
+                        send_bootstrap_grant(socket, their_uid, CrustUser::Node)
+                    } else {
+                        trace!(
+                            "Bootstrapper failed to pass requisite condition of external reachability. \
+                                Denying bootstrap."
+                        );
+                        let reason = BootstrapDenyReason::FailedExternalReachability;
+                        socket.send((Message::BootstrapDenied(reason), 0))
+                    }
+                })
+        }
+        ExternalReachability::NotRequired => {
+            if !is_peer_whitelisted(CrustUser::Client) {
+                trace!("Bootstrapper Client is not whitelisted. Denying bootstrap.");
+                let reason = BootstrapDenyReason::ClientNotWhitelisted;
+                socket.send(((Message::BootstrapDenied(reason), 0)))
+            } else {
+                send_bootstrap_grant(socket, their_uid, CrustUser::Client)
+            }
+        }
+    }
+}
+
+fn is_peer_whitelisted(
+    config: CrustConfig,
+    peer_ip: &IpAddr,
+    peer_kind: CrustUser
+) -> bool {
+    let res = match peer_kind {
+        CrustUser::Node => {
+            unwrap!(config.lock())
+                .cfg
+                .whitelisted_node_ips
+                .as_ref()
+                .map_or(true, |ips| ips.contains(&peer_ip))
+        }
+        CrustUser::Client => {
+            unwrap!(config.lock())
+                .cfg
+                .whitelisted_client_ips
+                .as_ref()
+                .map_or(true, |ips| ips.contains(&peer_ip))
+        }
+    };
+
+    if !res {
+        trace!("IP: {} is not whitelisted.", peer_ip);
+    }
+
+    res
+}
+
+fn send_bootstrap_grant(
+) -> BoxFuture<(), ()> {
+    // Do not accept multiple bootstraps from same peer
+    match unwrap!(self.cm.lock()).get(&their_uid).cloned() {
+        Some(ConnectionId { active_connection: Some(_), .. }) => {
+            return future::ok(()).boxed();
+        }
+        _ => (),
+    };
+
+    let send_reply = socket.send((Message::BootstrapGranted(our_uid), 0));
+    with_handshaking(their_id, send_reply)
+        .and_then(|socket| {
+            active_connection(
+                socket,
+                cm.clone(),
+                our_uid,
+                their_uid,
+                peer_kind,
+                Event::BootstrapAccept(their_uid, peer_kind),
+                event_tx,
+            )
+        })
+}
+
+fn handle_connect(
+    their_uid: UID,
+    their_name_hash: NameHash,
+) -> BoxFuture<(), ()> {
+    if their_name_hash != our_name_hash {
+        trace!("Invalid name hash given. Denying connection.");
+        return future::ok(()).boxed();
+    }
+
+    try_update_crust_config();
+
+    if !is_peer_whitelisted(CrustUser::Node) {
+        trace!("Connecting Node is not whitelisted. Denying connection.");
+        return future::ok(()).boxed();
+    }
+
+    let send_reply = socket.send((Message::Connect(our_uid, our_name_hash), 0));
+        .and_then(|socket| {
+            connection_candidate(socket, cm, our_uid, their_uid)
+        });
+    with_handshaking(their_uid, send_reply)
+        .and_then(|socket| {
+            active_connection(
+                socket,
+                cm.clone(),
+                our_uid,
+                their_uid,
+                CrustUser::Node,
+                Event::ConnectSuccess(their_uid),
+                event_tx,
+            )
+        })
+}
+
+fn handle_echo_addr_req(
+    socket: Socket,
+    peer_addr: SocketAddr,
+) -> BoxFuture<(), ()> {
+    socket.send((Message::EchoAddrResp(peer_addr), 0))
+}
+
+fn with_handshaking<F>(
+    their_id,
+    future: F,
+) -> BoxFuture<(), ()> {
+    {
+        let mut guard = unwrap!(self.cm.lock());
+        guard
+            .entry(their_uid)
+            .or_insert(ConnectionId {
+                active_connection: None,
+                currently_handshaking: 0,
+            })
+            .currently_handshaking += 1;
+        trace!(
+            "Connection Map inserted: {:?} -> {:?}",
+            their_uid,
+            guard.get(&their_uid)
+        );
+    }
+    future.then(|res| {
+        let mut guard = unwrap!(self.cm.lock());
+        if let Entry::Occupied(mut oe) = guard.entry(their_uid) {
+            oe.get_mut().currently_handshaking -= 1;
+            if oe.get().currently_handshaking == 0 && oe.get().active_connection.is_none() {
+                let _ = oe.remove();
+            }
+        }
+        trace!(
+            "Connection Map removed: {:?} -> {:?}",
+            their_uid,
+            guard.get(&their_uid)
+        );
+        res
+    })
+}
+
+fn validate_peer_uid(our_uid: UID, their_uid: UID) -> Result<UID, ()> {
+    if our_uid == their_uid {
+        debug!("Accepted connection from ourselves");
+        return Err(());
+    }
+    Ok(their_uid)
+}
+
+fn try_update_crust_config(config: CrustConfig) {
+    match read_config_file() {
+        Ok(cfg) => unwrap!(config.lock()).check_for_update_and_mark_modified(cfg),
+        Err(e) => debug!("Could not read Crust config file: {:?}", e),
+    }
+}
+
+
+/*
 pub struct ExchangeMsg<UID: Uid> {
     token: Token,
     cm: ConnectionMap<UID>,
@@ -521,3 +793,5 @@ enum NextState<UID> {
     ActiveConnection(UID, CrustUser),
     ConnectionCandidate(UID),
 }
+*/
+

@@ -24,95 +24,27 @@ use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::rc::Rc;
 
-pub type Finish = Box<FnMut(&mut Core, &Poll, Token, Result<SocketAddr, ()>)>;
-
-pub struct GetExtAddr<UID: Uid> {
-    token: Token,
-    socket: Socket,
-    request: Option<(Message<UID>, Priority)>,
-    finish: Finish,
+pub fn get_ext_addr<UID: Uid>(
+    handle: &Handle,
+    local_addr: &SocketAddr,
+    peer_stun: &SocketAddr,
+) -> IoFuture<SocketAddr> {
+    let query_socket = util::new_reusably_bound_tcp_socket(&local_addr)?;
+    TcpStream::connect_stream(query_socket, peer_stun, handle)
+        .and_then(|tcp_socket| {
+            let socket = Socket::wrap(tcp_socket);
+            socket.send((Message::EchoAddrReq, 0))
+        })
+        .and_then(|socket| {
+            socket.into_future()
+        })
+        .map(|(msg, _)| {
+            if let Some(Message::EchoAddrResp(ext_addr) = msg {
+                Ok(ext_addr)
+            } else {
+                Err(io::ErrorKind::InvalidData.into())
+            }
+        })
+        .boxed()
 }
 
-impl<UID: Uid> GetExtAddr<UID> {
-    pub fn start(
-        core: &mut Core,
-        poll: &Poll,
-        local_addr: SocketAddr,
-        peer_stun: &SocketAddr,
-        finish: Finish,
-    ) -> Result<Token, NatError> {
-        let query_socket = util::new_reusably_bound_tcp_socket(&local_addr)?;
-        let query_socket = query_socket.to_tcp_stream()?;
-        let socket = TcpStream::connect_stream(query_socket, peer_stun)?;
-
-        let socket = Socket::wrap(socket);
-        let token = core.get_new_token();
-
-        let state = Self {
-            token: token,
-            socket: socket,
-            request: Some((Message::EchoAddrReq, 0)),
-            finish: finish,
-        };
-
-        poll.register(
-            &state.socket,
-            token,
-            Ready::error() | Ready::hup() | Ready::writable(),
-            PollOpt::edge(),
-        )?;
-
-        let _ = core.insert_state(token, Rc::new(RefCell::new(state)));
-
-        Ok(token)
-    }
-
-    fn write(&mut self, core: &mut Core, poll: &Poll, msg: Option<(Message<UID>, Priority)>) {
-        if self.socket.write(poll, self.token, msg).is_err() {
-            self.handle_error(core, poll);
-        }
-    }
-
-    fn receive_response(&mut self, core: &mut Core, poll: &Poll) {
-        match self.socket.read::<Message<UID>>() {
-            Ok(Some(Message::EchoAddrResp(ext_addr))) => {
-                self.terminate(core, poll);
-                let token = self.token;
-                (*self.finish)(core, poll, token, Ok(ext_addr))
-            }
-            Ok(None) => (),
-            Ok(Some(_)) | Err(_) => self.handle_error(core, poll),
-        }
-    }
-
-    fn handle_error(&mut self, core: &mut Core, poll: &Poll) {
-        self.terminate(core, poll);
-        let token = self.token;
-        (*self.finish)(core, poll, token, Err(()));
-    }
-}
-
-impl<UID: Uid> State for GetExtAddr<UID> {
-    fn ready(&mut self, core: &mut Core, poll: &Poll, kind: Ready) {
-        if kind.is_error() || kind.is_hup() {
-            self.handle_error(core, poll);
-        } else {
-            if kind.is_writable() {
-                let req = self.request.take();
-                self.write(core, poll, req);
-            }
-            if kind.is_readable() {
-                self.receive_response(core, poll)
-            }
-        }
-    }
-
-    fn terminate(&mut self, core: &mut Core, poll: &Poll) {
-        let _ = core.remove_state(self.token);
-        let _ = poll.deregister(&self.socket);
-    }
-
-    fn as_any(&mut self) -> &mut Any {
-        self
-    }
-}

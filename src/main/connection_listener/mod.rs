@@ -35,179 +35,79 @@ use std::sync::{Arc, Mutex};
 
 const LISTENER_BACKLOG: i32 = 100;
 
-pub struct ConnectionListener<UID: Uid> {
-    token: Token,
+pub struct ConnectionListener {
+    sender: Sender<bool>,
+}
+
+pub fn connection_listener(
+    handshake_timeout_sec: Option<u64>,
+    port: u16,
+    force_include_port: bool,
+    our_uid: UID,
+    name_hash: NameHash,
     cm: ConnectionMap<UID>,
     config: CrustConfig,
+    mc: Arc<MappingContext>,
+    our_listeners: Arc<Mutex<Vec<SocketAddr>>>,
     event_tx: ::CrustEventSender<UID>,
-    listener: TcpListener,
-    name_hash: NameHash,
-    our_uid: UID,
-    timeout_sec: Option<u64>,
-    accept_bootstrap: bool,
-}
+) -> IoFuture<ConnectionListener> {
+    map_tcp_socket(port, &mc)
+        .and_then(|(socket, mut mapped_addrs)| {
+            let checker = |s: &SocketAddr| ip_addr_is_global(&s.ip()) && s.port() == port;
+            if force_include_port && port != 0 && !mapped_addrs.iter().any(checker) {
+                let global_addrs: Vec<_> = mapped_addrs
+                    .iter()
+                    .filter_map(|s| if ip_addr_is_global(&s.ip()) {
+                        let mut s = *s;
+                        s.set_port(port);
+                        Some(s)
+                    } else {
+                        None
+                    })
+                    .collect();
+                mapped_addrs.extend(global_addrs);
+            }
+            
+            let listener = socket.listen(LISTENER_BACKLOG)?;
+            let local_addr = listener.local_addr()?;
 
-impl<UID: Uid> ConnectionListener<UID> {
-    pub fn start(
-        core: &mut Core,
-        poll: &Poll,
-        handshake_timeout_sec: Option<u64>,
-        port: u16,
-        force_include_port: bool,
-        our_uid: UID,
-        name_hash: NameHash,
-        cm: ConnectionMap<UID>,
-        config: CrustConfig,
-        mc: Arc<MappingContext>,
-        our_listeners: Arc<Mutex<Vec<SocketAddr>>>,
-        token: Token,
-        event_tx: ::CrustEventSender<UID>,
-    ) {
-        let event_tx_0 = event_tx.clone();
-        let finish =
-            move |core: &mut Core, poll: &Poll, socket, mut mapped_addrs: Vec<SocketAddr>| {
-                let checker = |s: &SocketAddr| ip_addr_is_global(&s.ip()) && s.port() == port;
-                if force_include_port && port != 0 && !mapped_addrs.iter().any(checker) {
-                    let global_addrs: Vec<_> = mapped_addrs
-                        .iter()
-                        .filter_map(|s| if ip_addr_is_global(&s.ip()) {
-                            let mut s = *s;
-                            s.set_port(port);
-                            Some(s)
-                        } else {
-                            None
-                        })
-                        .collect();
-                    mapped_addrs.extend(global_addrs);
+            let listener = TcpListener::from_listener(listener, &local_addr)?;
+
+            *unwrap!(our_listeners.lock()) = mapped_addrs.into_iter().collect();
+
+            let mut accept_bootstrap = false;
+            let (tx, rx) = mpsc::unbounded();
+
+            handle.spawn(listener.incoming().for_each(move |stream| {
+                while let Async::Ready(accept) = unwrap!(rx.poll()) {
+                    accept_bootstrap = accept;
                 }
-                if let Err(e) = Self::handle_mapped_socket(
-                    core,
-                    poll,
-                    handshake_timeout_sec,
-                    socket,
-                    mapped_addrs,
+
+                handle.spawn(exchange_msg(
+                    timeout_sec,
+                    Socket::wrap(stream),
+                    accept_bootstrap,
                     our_uid,
                     name_hash,
-                    cm,
-                    config,
-                    our_listeners,
-                    token,
+                    cm.clone(),
+                    config.clone(),
                     event_tx.clone(),
-                )
-                {
-                    error!("TCP Listener failed to handle mapped socket: {:?}", e);
-                    let _ = event_tx.send(Event::ListenerFailed);
-                }
-            };
+                ));
+            }));
 
-        if let Err(e) = MappedTcpSocket::<_, UID>::start(core, poll, port, &mc, finish) {
-            error!("Error starting tcp_listening_socket: {:?}", e);
-            let _ = event_tx_0.send(Event::ListenerFailed);
-        }
-    }
-
-    pub fn set_accept_bootstrap(&mut self, accept: bool) {
-        self.accept_bootstrap = accept;
-    }
-
-    fn handle_mapped_socket(
-        core: &mut Core,
-        poll: &Poll,
-        timeout_sec: Option<u64>,
-        socket: TcpBuilder,
-        mapped_addrs: Vec<SocketAddr>,
-        our_uid: UID,
-        name_hash: NameHash,
-        cm: ConnectionMap<UID>,
-        config: CrustConfig,
-        our_listeners: Arc<Mutex<Vec<SocketAddr>>>,
-        token: Token,
-        event_tx: ::CrustEventSender<UID>,
-    ) -> ::Res<()> {
-        let listener = socket.listen(LISTENER_BACKLOG)?;
-        let local_addr = listener.local_addr()?;
-
-        let listener = TcpListener::from_listener(listener, &local_addr)?;
-        poll.register(
-            &listener,
-            token,
-            Ready::readable() | Ready::error() | Ready::hup(),
-            PollOpt::edge(),
-        )?;
-
-        *unwrap!(our_listeners.lock()) = mapped_addrs.into_iter().collect();
-
-        let state = Self {
-            token: token,
-            cm: cm,
-            config: config,
-            event_tx: event_tx.clone(),
-            listener: listener,
-            name_hash: name_hash,
-            our_uid: our_uid,
-            timeout_sec: timeout_sec,
-            accept_bootstrap: false,
-        };
-
-        let _ = core.insert_state(token, Rc::new(RefCell::new(state)));
-        let _ = event_tx.send(Event::ListenerStarted(local_addr.port()));
-
-        Ok(())
-    }
-
-    fn accept(&self, core: &mut Core, poll: &Poll) {
-        loop {
-            match self.listener.accept() {
-                Ok((socket, _)) => {
-                    if let Err(e) = ExchangeMsg::start(
-                        core,
-                        poll,
-                        self.timeout_sec,
-                        Socket::wrap(socket),
-                        self.accept_bootstrap,
-                        self.our_uid,
-                        self.name_hash,
-                        self.cm.clone(),
-                        self.config.clone(),
-                        self.event_tx.clone(),
-                    )
-                    {
-                        debug!("Error accepting direct connection: {:?}", e);
-                    }
-                }
-                Err(ref e)
-                    if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::Interrupted => {
-                    return
-                }
-                Err(ref e) => {
-                    debug!("Failed to accept new socket: {:?}", e);
-                    return;
-                }
-            }
-        }
-    }
+            Ok(ConnectionListener {
+                sender: tx,
+            })
+        })
 }
 
-impl<UID: Uid> State for ConnectionListener<UID> {
-    fn ready(&mut self, core: &mut Core, poll: &Poll, kind: Ready) {
-        if kind.is_error() || kind.is_hup() {
-            self.terminate(core, poll);
-            let _ = self.event_tx.send(Event::ListenerFailed);
-        } else if kind.is_readable() {
-            self.accept(core, poll);
-        }
-    }
-
-    fn terminate(&mut self, core: &mut Core, poll: &Poll) {
-        let _ = poll.deregister(&self.listener);
-        let _ = core.remove_state(self.token);
-    }
-
-    fn as_any(&mut self) -> &mut Any {
-        self
-    }
+impl ConnectionListener {
+    pub fn set_accept_bootstrap(&self, accept: bool) {
+        let _ = self.send(accept);
+    } 
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,3 +447,5 @@ mod tests {
         );
     }
 }
+*/
+

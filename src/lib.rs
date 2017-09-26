@@ -87,3 +87,5 @@ pub use main::{Config, ConnectionInfoResult, CrustError, Event, PrivConnectionIn
 pub type CrustEventSender<UID> = ::maidsafe_utilities::event_sender::MaidSafeObserver<Event<UID>>;
 /// Crust's result type
 pub type Res<T> = Result<T, CrustError>;
+pub type BoxFuture<T, E> = Box<Future<Item=T, Error=E> + Send + 'static>;
+

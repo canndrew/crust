@@ -80,3 +80,5 @@ mod error;
 mod message;
 mod socket;
 mod state;
+mod priority_queue;
+

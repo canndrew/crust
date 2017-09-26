@@ -24,6 +24,32 @@ use std::mem;
 use std::net::SocketAddr;
 use std::rc::Rc;
 
+pub fn try_peer(
+    peer_addr: &SocketAddr,
+    our_uid: UID,
+    name_hash: NameHash,
+    ext_reachability: ExtReachability,
+) -> IoFuture<Result<(Socket, UID), Option<BootstrapDenyReason>>> {
+    Socket::connect(peer)
+        .and_then(|socket| {
+            socket.send((Message::BootstrapRequest(
+                our_uid,
+                name_hash,
+                ext_reachability,
+            ), 0))
+        })
+        .and_then(|socket| {
+            socket.into_future()
+        })
+        .and_then(|(msg_opt, socket)| {
+            let msg = match msg_opt {
+                Some(msg) => msg,
+                None => future::err(None).boxed(),
+            }
+        })
+}
+
+
 pub type Finish<UID> = Box<
     FnMut(&mut Core,
           &Poll,
