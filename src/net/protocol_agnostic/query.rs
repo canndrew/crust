@@ -191,3 +191,69 @@ quick_error! {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use priv_prelude::*;
+    use tokio_core::reactor::Core;
+    use futures::stream::FuturesUnordered;
+    use futures::future::Either;
+    use env_logger;
+
+    #[test]
+    fn multiple_utp_queriers_in_parallel() {
+        const NUM_QUERIERS: u32 = 2;
+
+        let _ = env_logger::init();
+
+        let mut core = unwrap!(Core::new());
+        let handle = core.handle();
+
+        core.run(future::lazy(|| {
+            let socket = unwrap!(UdpSocket::bind_reusable(&addr!("0.0.0.0:0"), &handle));
+            let bind_addr = unwrap!(socket.local_addr()).unspecified_to_localhost();
+
+            let mut futures_unordered = FuturesUnordered::new();
+            for _ in 0..NUM_QUERIERS {
+                let sk = SecretKeys::new();
+                let pk = sk.public_keys().clone();
+                let listener = unwrap!(PaListener::bind(&utp_addr!("0.0.0.0:0"), &handle, sk));
+
+                let addr = unwrap!(listener.local_addr()).unspecified_to_localhost();
+                let addr = match addr {
+                    PaAddr::Utp(addr) => addr,
+                    PaAddr::Tcp(..) => panic!("expected utp addr"),
+                };
+                let incoming = listener.incoming();
+                let querier = PaUdpAddrQuerier::new(&addr, pk);
+
+                let query = {
+                    querier
+                        .query(&bind_addr, &handle)
+                        .map_err(|e| panic!("query failed: {}", e))
+                };
+                let accept = {
+                    Timeout::new(Duration::from_secs(1), &handle)
+                    .infallible()
+                    .and_then(|()| incoming.into_future())
+                    .map_err(|(e, _)| panic!("incoming errored: {}", e))
+                };
+                let select = query.select2(accept);
+                let future = select.map(move |either| match either {
+                    Either::A((recv_addr, _accept)) => {
+                        assert_eq!(recv_addr, bind_addr);
+                    },
+                    Either::B(..) => panic!("accepted something somehow"),
+                }).map_err(|either| {
+                    let (v, _) = either.split();
+                    v
+                });
+
+                futures_unordered.push(future);
+            }
+
+            futures_unordered.for_each(|()| Ok(()))
+        })).void_unwrap()
+    }
+}
+
